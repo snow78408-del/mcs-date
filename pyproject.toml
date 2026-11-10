@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcs-date"
-version = "0.1.0"
-description = "Experiment record and data versioning scaffold for microfluidic control system (MCS) data."
+version = "0.2.0"
+description = "Microfluidic two-phase experiment system: droplet vision analysis, syringe-pump control, spider-style flow-ratio scanning and phase-diagram animation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "snow78408-del" },
 ]
-keywords = ["microfluidics", "experiment", "data", "mcs"]
+keywords = ["microfluidics", "two-phase flow", "droplet", "experiment", "mcs"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -23,13 +23,22 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
 ]
-dependencies = []
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]
 
 [project.optional-dependencies]
+hardware = [
+    "pyserial>=3.5",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+
+[project.scripts]
+mcs-date = "mcs_date.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -40,6 +49,7 @@ mcs_date = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

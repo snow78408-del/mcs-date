@@ -52,3 +52,8 @@ artifacts/
 .coverage
 .coverage.*
 htmlcov/
+# Local run artifacts
+out/
+
+# Extracted paper text is kept local only (copyright)
+docs/references/*.txt

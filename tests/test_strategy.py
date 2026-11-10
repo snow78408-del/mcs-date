@@ -1,0 +1,93 @@
+"""蜘蛛式扫描策略测试：覆盖范围、边界夹逼与时间预算。"""
+
+from __future__ import annotations
+
+import pytest
+
+from mcs_date.experiment import (
+    FlowRegime,
+    ScanConfig,
+    SpiderScanner,
+    run_offline_scan,
+    station_boundaries,
+    summarize_regimes,
+)
+from mcs_date.experiment.models import regime_group
+
+
+SMALL_CONFIG = ScanConfig(
+    center_q1=80.0,
+    center_q2=20.0,
+    node_duration_s=5.0,
+    startup_s=1.0,
+    step_ratio=1.6,
+    bisection_rounds=1,
+    max_expand_steps=3,
+    max_stations=3,
+    max_nodes=40,
+)
+
+
+@pytest.fixture(scope="module")
+def result():
+    return run_offline_scan(SMALL_CONFIG)
+
+
+def test_center_node_starts_at_working_point(result) -> None:
+    assert result.center_node.q1 == SMALL_CONFIG.center_q1
+    assert result.center_node.q2 == SMALL_CONFIG.center_q2
+    assert result.center_node.regime is FlowRegime.THREADING
+
+
+def test_scan_produces_nodes_and_brackets(result) -> None:
+    assert len(result.nodes) >= 6
+    assert result.brackets, "扫描至少应夹逼出一个流型边界"
+    assert len(result.nodes) <= SMALL_CONFIG.max_nodes
+
+
+def test_nodes_are_unique_and_ordered(result) -> None:
+    indices = [node.index for node in result.nodes]
+    assert indices == list(range(1, len(indices) + 1))
+    started = [node.started_s for node in result.nodes]
+    assert started == sorted(started)
+
+
+def test_planned_duration_matches_node_budget(result) -> None:
+    per_node = SMALL_CONFIG.startup_s + SMALL_CONFIG.node_duration_s
+    expected = (len(result.nodes) - 1) * per_node + SMALL_CONFIG.node_duration_s
+    assert result.total_duration_s == pytest.approx(expected)
+
+
+def test_station_boundaries_stay_inside_brackets(result) -> None:
+    table = station_boundaries(result)
+    assert table
+    for station_q1, entries in table.items():
+        assert station_q1 > 0
+        for kind, bracket in entries.items():
+            low = min(bracket.inside.q2, bracket.outside.q2)
+            high = max(bracket.inside.q2, bracket.outside.q2)
+            assert low <= bracket.boundary_q2 <= high
+            assert 1.0 <= bracket.relative_width <= SMALL_CONFIG.step_ratio + 1e-9
+
+
+def test_stream_onset_separates_droplet_from_stream(result) -> None:
+    for bracket in result.boundaries("stream_onset"):
+        assert regime_group(bracket.inside.regime) == "stream"
+        assert regime_group(bracket.outside.regime) in {"droplet", "flood"}
+
+
+def test_flood_onset_separates_stream_from_flood(result) -> None:
+    for bracket in result.boundaries("flood_onset"):
+        groups = {regime_group(bracket.inside.regime), regime_group(bracket.outside.regime)}
+        assert groups == {"stream", "flood"}
+
+
+def test_summary_counts_all_regimes(result) -> None:
+    counts = summarize_regimes(result)
+    assert sum(counts.values()) == len(result.nodes)
+    assert all(value > 0 for value in counts.values())
+
+
+def test_scanner_rejects_bad_center() -> None:
+    with pytest.raises(ValueError):
+        SpiderScanner(lambda *_: None, config=ScanConfig(center_q1=10.0, center_q2=20.0)).run()
