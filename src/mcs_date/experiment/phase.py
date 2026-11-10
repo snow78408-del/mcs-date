@@ -1,8 +1,8 @@
 """流型定义、节点观测量与基于观测量窗口的流型分类。
 
-设计原则：分类器只吃 *测量特征*（液滴生成频率、液滴尺寸、液流覆盖率等），
-不依赖仿真模型，因此同一套逻辑既能用于离线仿真，也能直接用于真实相机
-+ :class:`mcs_date.vision.VisionPipeline` 的输出。
+分类器只吃测量特征，不从流量比推断实测流型。真实滴落/射流识别还要求
+结点可见、断裂位置和去重生成事件；目前 VisionPipeline 本身尚不提供全部
+这些字段。缺形态证据时返回UNKNOWN；启发式只能显式选择或用于仿真。
 """
 
 from __future__ import annotations
@@ -52,7 +52,12 @@ class NodeFeatures:
     max_plug_length_ratio: float = 0.0    # 最长栓长 / 观测长度
     sample_count: int = 0
     window_s: float = 0.0
-    extra: dict[str, float] = field(default_factory=dict)
+    extra: dict[str, object] = field(default_factory=dict)
+    source: str = "unspecified"  # simulation / camera / recorded_video / heuristic
+    droplet_events: int | None = None  # 去重越线/生成事件，绝非逐帧检测数相加
+    junction_visible: bool = False
+    breakup_distance_h: float | None = None
+    observation_extent_h: float | None = None
 
     @property
     def flow_ratio(self) -> float:
@@ -87,6 +92,10 @@ class RegimeThresholds:
     displacement_max_coverage: float = 0.35
     displacement_min_cv: float = 0.35
     displacement_max_rate_hz: float = 1.0
+    min_droplet_events: int = 3
+    max_uniform_diameter_cv: float = 0.20
+    junction_breakup_max_h: float = 1.0  # 待芯片标注校准，不是文献通用常数
+    threading_observation_h: float = 20.0
 
 
 def clamp01(value: float) -> float:
@@ -103,7 +112,48 @@ def classify_regime(
     实验日志，不作为统计显著性。
     """
     th = thresholds or RegimeThresholds()
-    if features.sample_count <= 0 or features.window_s <= 0:
+    numeric = (features.q1, features.q2, features.window_s, features.sample_count,
+               features.stream_coverage, features.droplet_rate_hz, features.mean_diameter_ratio,
+               features.diameter_cv, features.max_plug_length_ratio)
+    if (not all(math.isfinite(v) for v in numeric) or features.sample_count <= 0
+            or features.window_s <= 0 or features.q1 <= 0 or features.q2 <= 0
+            or not 0 <= features.stream_coverage <= 1 or features.droplet_rate_hz < 0
+            or features.mean_diameter_ratio < 0 or features.diameter_cv < 0
+            or not 0 <= features.max_plug_length_ratio <= 1):
+        return FlowRegime.UNKNOWN, 0.0
+    for value in (features.breakup_distance_h, features.observation_extent_h):
+        if value is not None and (not math.isfinite(value) or value < 0):
+            return FlowRegime.UNKNOWN, 0.0
+    if features.droplet_events is not None and (
+        isinstance(features.droplet_events, bool) or not isinstance(features.droplet_events, int)
+        or features.droplet_events < 0
+    ):
+        return FlowRegime.UNKNOWN, 0.0
+
+    formation = assess_formation(features, th)
+    if features.junction_visible and features.breakup_distance_h is not None:
+        if (not formation["droplets_observed"] or formation["droplet_events"] < th.min_droplet_events
+                or features.observation_extent_h is not None
+                and features.breakup_distance_h > features.observation_extent_h):
+            return FlowRegime.UNKNOWN, 0.0
+        if features.breakup_distance_h <= th.junction_breakup_max_h:
+            if not formation["uniformity_candidate"]:
+                return FlowRegime.UNKNOWN, 0.0
+            return FlowRegime.DRIPPING, 0.8  # 规则评分，不是标注正确率
+        if features.breakup_distance_h < th.threading_observation_h:
+            return FlowRegime.JETTING, 0.8
+        return FlowRegime.UNKNOWN, 0.0
+    if (features.junction_visible and features.observation_extent_h is not None
+            and features.observation_extent_h >= th.threading_observation_h
+            and features.stream_coverage >= th.threading_min_coverage
+            and features.droplet_events == 0 and features.droplet_rate_hz == 0):
+        return FlowRegime.THREADING, 0.8
+    if features.junction_visible and features.observation_extent_h is not None:
+        # 视野不够、丢帧或没有可靠断裂证据时，不落回启发式宣称束流。
+        return FlowRegime.UNKNOWN, 0.0
+    # 没有结点/断裂位置的真实视频不可凭“大、低频”就宣称dripping。
+    # 保留显式 heuristic 模式给旧研究脚本，仿真也必须打来源标识。
+    if features.source not in {"simulation", "heuristic"}:
         return FlowRegime.UNKNOWN, 0.0
 
     coverage = clamp01(features.stream_coverage)
@@ -151,7 +201,8 @@ def classify_regime(
     if (
         coverage <= th.dripping_max_coverage
         and diameter >= th.dripping_min_diameter_ratio
-        and rate <= th.dripping_max_rate_hz
+        and 0 < rate <= th.dripping_max_rate_hz
+        and bool(formation["uniformity_candidate"])
     ):
         margin = min(
             th.dripping_max_coverage - coverage,
@@ -166,6 +217,30 @@ def classify_regime(
     return FlowRegime.UNKNOWN, 0.0
 
 
+def assess_formation(features: NodeFeatures, thresholds: RegimeThresholds | None = None) -> dict[str, object]:
+    """将“确有离散液滴/均一候选”与“滴落/射流形态”分开，射流也可能成滴。
+
+    均一候选仅表示事件数与尺寸CV达标，不代表最佳点或已验证长期稳定。
+    """
+    th = thresholds or RegimeThresholds()
+    events = features.droplet_events
+    if events is None and features.source in {"simulation", "heuristic"}:
+        if math.isfinite(features.droplet_rate_hz) and math.isfinite(features.window_s):
+            events = max(0, int(features.droplet_rate_hz * features.window_s))
+    valid = (features.sample_count > 0 and math.isfinite(features.window_s)
+             and features.window_s > 0 and math.isfinite(features.droplet_rate_hz)
+             and features.droplet_rate_hz >= 0
+             and isinstance(events, int) and not isinstance(events, bool) and events >= 0)
+    observed = bool(events and features.droplet_rate_hz > 0) if valid else None
+    uniform = bool(valid and observed and events >= th.min_droplet_events
+                   and math.isfinite(features.mean_diameter_ratio) and features.mean_diameter_ratio > 0
+                   and math.isfinite(features.diameter_cv)
+                   and 0 <= features.diameter_cv <= th.max_uniform_diameter_cv)
+    return {"droplet_events": events, "droplets_observed": observed,
+            "uniformity_candidate": uniform,
+            "best_operating_point_verified": False}
+
+
 def _confidence(margin: float, scale: float) -> float:
     if not math.isfinite(margin):
         return 0.0
@@ -176,6 +251,11 @@ def merge_features(samples: list[NodeFeatures]) -> NodeFeatures:
     """把同一节点的多段特征按时间加权合并。"""
     if not samples:
         raise ValueError("samples 不能为空")
+    first = samples[0]
+    if any(not math.isfinite(s.window_s) or s.window_s <= 0 for s in samples):
+        raise ValueError("合并窗口必须为有限正时长")
+    if any(not math.isclose(s.q1, first.q1) or not math.isclose(s.q2, first.q2) for s in samples):
+        raise ValueError("不能把不同流量节点合并成一个工作点")
     total = sum(max(s.window_s, 1e-9) for s in samples)
     weights = [max(s.window_s, 1e-9) / total for s in samples]
 
@@ -194,4 +274,9 @@ def merge_features(samples: list[NodeFeatures]) -> NodeFeatures:
         sample_count=sum(s.sample_count for s in samples),
         window_s=sum(s.window_s for s in samples),
         extra={k: v for k, v in first.extra.items()},
+        source=first.source if all(s.source == first.source for s in samples) else "unspecified",
+        droplet_events=sum(s.droplet_events for s in samples) if all(s.droplet_events is not None for s in samples) else None,
+        junction_visible=all(s.junction_visible for s in samples),
+        breakup_distance_h=first.breakup_distance_h if all(s.breakup_distance_h == first.breakup_distance_h for s in samples) else None,
+        observation_extent_h=min(s.observation_extent_h for s in samples) if all(s.observation_extent_h is not None for s in samples) else None,
     )

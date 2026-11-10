@@ -1,221 +1,183 @@
 # mcs-date
 
-面向微流控芯片的**两相流实验系统**：实时视频液滴识别、注射泵连接控制、以及“蜘蛛式”分节点扫描自动测绘**二相图**（流型图）并输出缓慢成图的动画。
+微流控两相流的**离线探索原型**：液滴视觉分析、双通道注射泵通信，以及以操作员选定工作点为起点的“蜘蛛式”节点扫描、结果存档与逐步成图。
 
-本仓库从 [MCS_QT](https://github.com/snow78408-del/MCS_QT) 移植了视觉分析与泵通信的核心代码（原工程未做任何修改），并新增了实验扫描、二相图建模、历史数据标定与动画层。所有功能都可以在没有相机、没有串口、没有显示器的机器上以**离线仿真**方式跑通。
+> **能力边界**：当前 `demo` / `scan` 都是仿真，不是真实自动实验。独立 `vision` 命令可以读取视频或 OpenCV 相机，独立 `pump --port` 可以操作串口；二者尚未接成有物理标定、交汇点/断裂位置与唯一成滴事件测量的真实闭环适配器。工业相机 SDK 未移植；本轮没有硬件测试，不宣称真实端到端自动实验已经就绪。
 
-![二相图最终结果](docs/examples/phase_diagram_final.png)
+视觉和泵通信核心裁剪自 [MCS_QT](https://github.com/snow78408-del/MCS_QT)，没有修改原工程。新增功能与证据限制见下文及[参考依据](<docs/references/README.md>)。
 
-## 核心物理口径：液滴窗口
+## 实验目标：通常从射流成滴点向周围探索
 
-本芯片的实测经验（用户 2026-11-10 反馈，已写入模型与测试）是：
+操作员先选一个当前认为最合适的 **jetting（射流成滴）工作点**，再探索周围流量：先看到液滴**尺寸**变化，继续偏离后，下游**断裂/形成位置**迁移，最后在给定观察窗口内表现为连续液丝、不再断裂。这里的“最好”是操作员选择，不是程序自动寻优或已经验证的最优点；默认 `(Q1,Q2)=(90,20) µL/min` 只是演示锚点。
 
-- 油水比 **r = Q1/Q2 太低** → 连续相切割能力不足 → 不能形成液滴（宽大栓塞，`tubing`）；
-- 油水比 **r 太高** → 连续相拖拽/剪切占优 → 也不能形成液滴（细射流 `jetting`，继续升高变成稳定束流 `threading`）；
-- **只有中间一段 r 窗口能形成液滴**（`dripping`），且实际设备通常达不到最佳滴落点、更多落在**射流侧**。
+- **jetting 可以形成液滴**：液丝在交汇点下游断裂；不能把 `jetting` 直接标为 `no_droplet`。
+- **dripping** 指交汇点附近断裂，是可选研究模式，不是日常实验的默认目标。
+- **threading** 表示在充分且已标定的观察范围内未见断裂，不等于在任意更远下游都永不成滴。
+- 仅有液滴尺寸、CV、覆盖率或逐帧检测次数，不能独立证明断裂位置或流型；还需交汇点可见性、唯一事件计数、位置与视野长度。证据不全就保留 `unknown`。
+- “观察到液滴”“均匀性候选”“射流/滴落流型”“已验证最佳点”是不同结论。当前均匀性规则只是工程筛选，不会确认最佳工作点。
 
-因此二相图上的“束流边界”在这里被重新解释为**液滴窗口的上/下边界**：
+### 仿真先验，不是学出的物理边界
 
-- `droplet_lower`（下边界，r = r_high）：再往高油水比走就进入射流；
-- `droplet_upper`（上边界，r = r_low）：再往低油水比走就变成栓塞。
+默认 `jetting` 仿真在 `log(Q1)` 与 `log(Q1/Q2)` 空间构造以锚点为中心的椭圆偏离量 `rho`：`rho < 1` 生成射流成滴，之外生成窗口内未断裂的连续液丝；先改变尺寸，再让断裂位置向下游迁移。**中心、半径、阶段阈值及这套顺序都是说明性 PRIOR，不是历史数据学出的物理定律**。真实芯片未必按同样方向或幅度变化。
 
-## 三部分系统
-
-| 部分 | 模块 | 作用 |
-| --- | --- | --- |
-| ① 视觉 | `mcs_date.vision` | 实时视频采集/读帧 → 管道区域定位 → 液滴检测、跟踪、尺寸与流量统计 |
-| ② 泵 | `mcs_date.pump` | TS 注射泵 1200/8/E/1 串口协议；真实串口后端 + 仿真后端；流量设定、回读校验、安全停机 |
-| ③ 实验 | `mcs_date.experiment` | 蜘蛛式节点扫描 → 流型分类 → 液滴窗口边界夹逼 → 历史数据标定 → JSON/CSV 结果 → 二相图动画 |
-
-```
-src/mcs_date/
-├── vision/        # 移植自 MCS_QT backend/vision（裁剪版）
-│   ├── pipeline.py        VisionPipeline：帧 → VisionResult
-│   ├── detector.py        液滴检测（胶囊轮廓/插头几何）
-│   ├── channel_region.py  管壁定位与校正
-│   ├── tracker.py / kalman_tracker.py / nearest_tracker.py
-│   ├── metrics.py / bead_counter.py
-│   └── cameras/models.py  相机数据模型（真实 SDK 适配器未移植）
-├── pump/          # 移植自 MCS_QT backend/pump_hardware（裁剪版）
-│   ├── protocol.py        WSS/RSS/WSP/RSP/WSE/RSE 帧编解码
-│   ├── client.py          PumpClient（pyserial 可选）
-│   ├── service.py         PumpBackend 抽象 / SimulatedPumpBackend / SerialPumpBackend / PumpController
-│   └── invariants.py      Q1 >= 2*Q2 安全约束
-├── experiment/
-│   ├── phase.py           FlowRegime、NodeFeatures、RegimeThresholds、classify_regime
-│   ├── chip.py            ChipSimulator：由流量点生成流型与带噪测量特征
-│   ├── calibration.py     历史数据标定：液滴窗口、液滴尺寸模型、置信度与来源
-│   ├── models.py          ScanConfig / NodeRecord / BoundaryBracket / ScanResult
-│   ├── strategy.py        SpiderScanner：从稳定工作点向两侧扩展 + 二分夹逼边界
-│   ├── runner.py          ExperimentRunner（真实时钟/虚拟时钟）、run_offline_scan
-│   ├── report.py          JSON/CSV 持久化（schema_version=1）
-│   └── animate.py         OpenCV 渲染 + 纯 Python GIF89a 编码器
-├── demo.py        三部分离线演示（合成视频、仿真泵、离线扫描 + 动画）
-└── __main__.py    CLI：demo / learn / scan / animate / vision / pump
-```
+可选 `--target-regime dripping` 使用 `ratio_window` 示意模式。其 `ratio_low=2.2`、`ratio_high=4.185`、`ratio_thread=6.0` **目前全部为 prior**，不是确认的成滴范围，也不是默认 jetting 模式的真实边界。模型与数据来源保存在结果中，不能把仿真图当成实测相图。
 
 ## 快速开始
 
-```bash
-git clone https://github.com/snow78408-del/mcs-date.git
-cd mcs-date
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -e ".[dev]"
-
-# 一次跑通三部分（离线，无需硬件）
-python -m mcs_date demo --out out
-```
-
-如果暂时不想安装（或没有网络装 setuptools），也可以直接用源码目录运行：
+要求 Python ≥ 3.10；依赖见[项目配置](<pyproject.toml>)。
 
 ```powershell
-$env:PYTHONPATH = "src"     # Windows PowerShell
-# export PYTHONPATH=src     # Linux/macOS
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+
+# 无需相机、串口或显示器；仅离线演示
 python -m mcs_date demo --out out
 ```
 
-`demo` 会依次输出：
+已有依赖时也可直接运行源码：
 
-- `out/demo_vision.png`：合成微通道视频上的液滴检测标注（三帧拼图）；
-- 泵设定 (80, 20) µL/min 的回读值、故意违反 `Q1 >= 2*Q2` 时的安全报错、停泵回读；
-- `out/calibration.json`、`out/scan_result.json`、`out/nodes.csv`、`out/phase_diagram.gif`、`out/phase_diagram_final.png`。
+```powershell
+$env:PYTHONPATH = "src"
+$env:PYTHONIOENCODING = "utf-8"  # Windows 输出中文/µ 符号时避免旧代码页编码错误
+python -m mcs_date demo --out out
+```
+
+演示包含合成帧视觉、仿真泵安全检查、仿真扫描与输出。下列输出名是运行后生成的文件，并非实测数据：
+
+```text
+out/demo_vision.png
+out/calibration.json
+out/scan_result.json
+out/nodes.csv
+out/phase_diagram.gif
+out/phase_diagram_final.png
+out/evolution_trace.png
+```
 
 ## 命令行
 
-```text
-python -m mcs_date demo    --out out [--quiet]
-python -m mcs_date learn   --out out [--history-root E:\MCS_QT_Data] [--quiet]
-python -m mcs_date scan    --out out [--center-q1 70] [--center-q2 20] [--node-seconds 180] [--no-animate]
+完整参数以 `python -m mcs_date <子命令> --help` 为准；不带子命令显示帮助并返回 0。
+
+```powershell
+python -m mcs_date demo --out out --quiet
+python -m mcs_date learn --out out --history-root E:\MCS_QT_Data
+
+# 默认目标 jetting；90/20 是可替换的操作员锚点，不是最优解
+python -m mcs_date scan --out out --center-q1 90 --center-q2 20 --target-regime jetting --node-seconds 180 --max-nodes 140 --max-hours 4 --search-rounds 1 --history-root E:\MCS_QT_Data
+
+# 四射线小规模试验：默认 14 节点、约 0.8 h（仿真）
+python -m mcs_date pilot --out out --anchor-q1 90 --anchor-q2 20 --step 0.25 --steps-per-ray 3 --max-hours 1.5
+
+# 可选 dripping 研究模式，仍然只是 ratio_window 先验仿真
+python -m mcs_date scan --out out_dripping --target-regime dripping --max-nodes 60 --max-hours 4 --no-animate
 python -m mcs_date animate --result out/scan_result.json --out out
-python -m mcs_date vision  --synthetic [--max-frames 120] [--out out]
-python -m mcs_date vision  --video input.mp4   [--wall-top 0.30 --wall-bottom 0.70]
-python -m mcs_date vision  --camera 0
-python -m mcs_date pump    [--q1 80] [--q2 20] [--port COM3]
+
+python -m mcs_date vision --synthetic --max-frames 120 --out out_vision
+python -m mcs_date vision --video input.mp4 --wall-top 0.30 --wall-bottom 0.70 --out out_video
+python -m mcs_date vision --camera 0 --max-frames 120 --out out_camera
+
+# 不带 --port 为仿真；加 --port 将实际写硬件，须先完成独立安全验收
+python -m mcs_date pump --q1 80 --q2 20
 ```
 
-不带参数时打印帮助并返回 0。
+`scan` 支持 `--quiet`，但没有真实相机/串口闭环开关；指定历史目录也不会把仿真转换为实测。`learn` 还支持 `--observations`，输入必须是确经人工复核、来源可追溯的五元数组 `(Q1,Q2,label,confidence,source)`；不提供虚构标签示例作为默认实验事实。标签规则见[标定模块](<src/mcs_date/experiment/calibration.py>)。
 
-## ① 视觉：液滴识别
+## 生产模块与当前能力
 
-`VisionPipeline.process_frame(frame, timestamp=..., current_wall_lines=[...])` 接收一帧 BGR 图像并返回 `VisionResult`（`detections` / `tracking` / `beads` / `metrics` / `channel_region` 等）。
+| 部分 | 实现 | 当前范围 |
+| --- | --- | --- |
+| 视觉 | [帧流水线](<src/mcs_date/vision/pipeline.py>)、[液滴检测](<src/mcs_date/vision/detector.py>)、[管道定位](<src/mcs_date/vision/channel_region.py>)、[跟踪](<src/mcs_date/vision/tracker.py>)、[统计](<src/mcs_date/vision/metrics.py>) | BGR 帧 → ROI 校正、检测、跟踪和统计；真实物理尺寸仍需标定 |
+| 相机 | [相机数据模型](<src/mcs_date/vision/cameras/models.py>)、[CLI 采集入口](<src/mcs_date/__main__.py>) | OpenCV `VideoCapture` 独立读帧；没有海康/GenTL/大恒等工业 SDK 适配器 |
+| 泵 | [协议](<src/mcs_date/pump/protocol.py>)、[串口客户端](<src/mcs_date/pump/client.py>)、[控制服务](<src/mcs_date/pump/service.py>)、[安全不变量](<src/mcs_date/pump/invariants.py>) | 仿真与 TS 串口后端，参数回读、运行状态检查和停机失败传播 |
+| 实验 | [分类/成滴证据](<src/mcs_date/experiment/phase.py>)、[仿真器](<src/mcs_date/experiment/chip.py>)、[配置/结果](<src/mcs_date/experiment/models.py>)、[扫描策略](<src/mcs_date/experiment/strategy.py>)、[四射线试验](<src/mcs_date/experiment/pilot.py>)、[执行器](<src/mcs_date/experiment/runner.py>) | 有限预算扫描与区间夹逼；真实测量源仍需单独实现并验收 |
+| 证据与输出 | [只读标定](<src/mcs_date/experiment/calibration.py>)、[JSON/CSV](<src/mcs_date/experiment/report.py>)、[动画](<src/mcs_date/experiment/animate.py>)、[离线演示](<src/mcs_date/demo.py>) | 来源审计、保守加载、仿真水印与节点演化展示 |
 
-- `current_wall_lines` 传入两条归一化管壁直线（`{"x1","y1","x2","y2"}`，坐标 ∈ [0,1]）时，直接按手动管壁做 ROI 校正，跳过自动标定；不传则走 `ChannelRegionDetector` 自动定位。
-- 管道区域未定位（`status` 为 `collecting`/`rejected`）时返回空检测结果。
-- `detections.centers`、`detections.radii` 可直接用于画圈与计数；尺寸/插头长度等字段在标定后才有意义。
+### 视觉不是流型闭环适配器
 
-CLI 的 `--synthetic` 使用内置合成视频（亮通道 + 深色液滴，与 MCS_QT 采集视频极性一致）验证整条链路。真实相机路径用 OpenCV `VideoCapture`；MCS_QT 的海康/GenTL/大恒等厂商 SDK 适配器没有移植，需要时可在 `vision/cameras/` 下按 `FramePacket` 约定接入。
+`VisionPipeline.process_frame(frame, timestamp=..., current_wall_lines=...)` 返回检测、跟踪、计数和管道状态。可传两条归一化管壁直线做手动校正；未定位管道时不输出有效检测。像素到微米标定缺失时，不应把尺寸预览当作定量证据。
 
-## ② 泵：连接与控制
+独立 CLI 相机使用单调时钟；视频优先媒体时间戳，必要时依据有效 FPS 回退。`total_detections` 是**逐帧检测数之和**，不是去重后的成滴事件数。当前路径没有自动提供已校准交汇点、断裂位置 `Lb/h`、充分观察长度及唯一事件，不能直接驱动真实流型闭环。
 
-- 协议：TS 注射泵 1200/8/E/1，串口 `1200 8E1`，地址 1..31；帧格式 `FLAG(0xE9) + 转义(addr,len,pdu,fcs)`，`fcs` 为 XOR 校验。支持 `WSS/RSS`（使能与回读）、`WSP/RSP`（流量参数与回读）、`WSE/RSE`（运行状态）。
-- 通道约定：**CH1 = 连续相（油）总流量 Q1**，**CH2 = 分散相（水）流量 Q2**。
-- 安全约束：`Q1 >= 2 * Q2`（可用 `STRICT_Q1_Q2_GAP_UL_MIN=0.2`、`STRICT_Q1_Q2_RATIO=2.0` 调整），由 `PumpController.apply()` 在写泵前强制校验。
-- `SimulatedPumpBackend`：无硬件时完整模拟设定/回读/停泵，用于测试与演示。
-- `SerialPumpBackend`：真实串口后端（需 `pip install -e ".[hardware]"` 安装 pyserial），包含注册通道、写参数、逐通道回读校验、启动与停泵确认。
+### 泵安全：回读参数不等于物理流量
 
-```python
-from mcs_date.pump import PumpController, SimulatedPumpBackend
+CH1 为连续相（油）总流量 Q1，CH2 为分散相（水）Q2，单位 µL/min。TS 串口采用 `1200 8E1`；真实串口需额外安装 `pip install -e ".[hardware]"`。
 
-pump = PumpController(SimulatedPumpBackend())
-pump.connect()
-print(pump.apply(80.0, 20.0))   # -> (80.0, 20.0)
-pump.stop()
-pump.close()
-```
+- 流量必须有限、为正，并满足 **`Q1 >= 2*Q2`**；这是当前不可放宽的安全不变量，不是可随意调整的间隙参数。
+- 串口后端写入后检查设定参数回读与运行状态；`parameter_readback_q1/q2` 只表示设备参数读回，不是独立流量计测量，不能证明实际物理流量。
+- 启动前及退出时执行停机/状态确认；不能确认两通道停止会抛出 `PumpSafetyError`，不会静默当作成功。关闭串口不等于停泵。
+- 扫描结束或异常会**尝试**停泵并传播失败，但断线、设备故障或机械原因下，软件无法保证硬件已经停止。必须准备独立急停与人工确认；当前离线测试不构成硬件安全认证。
 
-## ③ 实验：蜘蛛式扫描与二相图
+## 蜘蛛式扫描、预算与未知区域
 
-### 扫描策略
+默认从操作员锚点出发，交替扩展 Q1 站位（最多 7 个，站位倍率 1.8）；每个站位固定 Q1，沿 Q2 两侧以倍率 1.6 探索。已出现目标/非目标观测对时，使用几何二分（默认 3 轮）缩小区间；粗节点未命中狭窄目标区时只做有限插点搜索，不保证一定发现。
 
-`SpiderScanner` 从**已知稳定工作点**（默认 Q1=70、Q2=20 µL/min，即历史恒流基准 70/20）出发：
+每次真实执行的节点计划为换参数 → 稳定等待 30 s → 观测 180 s；总预算计入**所有节点的全部启动等待与观测时长**，默认最多 140 个节点、4 小时，流量范围 Q1∈[2,200]、Q2∈[0.2,100]，同时受安全比例约束。离线虚拟时钟可以很快跑完，不代表硬件只需这些墙钟时间。API 真实执行器使用单调时钟和有界 I/O，另存 `actual_elapsed_s`、`clock_kind`、状态及停止调用结果；计划总时长与实际耗时分开解释。
 
-1. 以 `station_step_ratio=1.8` 沿 Q1 向左右交替扩展出多个“蜘蛛腿”站位（默认最多 7 个），保持 Q1/Q2 中心比例不变；
-2. 每个站位固定 Q1，沿 Q2 以 `step_ratio=1.6` 乘法步幅向低、向高两个方向逐点测量；
-3. 每个节点：换流量 → 稳定等待 `startup_s=30 s` → 观测 `node_duration_s=180 s`（约 3 分钟/节点）；
-4. 低 Q2 方向已进入 `threading`、高 Q2 方向已进入 `tubing`，或达到节点预算即收手；
-5. 首次出现流型变化时记录边界区间，再用几何二分（默认 3 轮）夹逼 `droplet_lower` / `droplet_upper` 的位置。
+- 默认边界名 `jetting_lower` / `jetting_upper`；可选 dripping 模式为 `droplet_lower` / `droplet_upper`。`lower` / `upper` 指**固定 Q1 下 Q2 的两侧**，不是未经核实的物理相变常数。
+- 边界保存原始内/外节点及 Q2 夹逼区间、区间宽度和分辨率；几何中点只是摘要，不是精确边界。
+- `unknown` 不伪装成目标外部，不凭空生成边界；细化遇到未知会保留较粗且不确定的区间。
+- 节点/时间预算耗尽、安全域截断、未观测到外侧或未发现目标都会记录状态/未解析区间，不能据此宣称完整区域已经找全。
+- `classify_regime` 对真实证据要求与显式 `simulation` / `heuristic` 路径不同。工程阈值须经实际标定，低 CV 不会自动成为流型标签。
 
-默认完整扫描约 **56 个节点、21 个边界、约 3.3 小时**（离线仿真用虚拟时钟，秒级跑完）。
+## 四射线小规模试验（pilot）
 
-### 流型与边界
+面对“通常到不了最佳滴落区、实际多在射流”的设备，`pilot` 不复刻全局自适应找窗，而是按操作员认可的射流锚点做一轮可解释的小试验（用户 2026-11-11 方案）：
 
-`FlowRegime`：`dripping`（滴落/成滴）、`jetting`（射流）、`threading`（稳定束流）、`tubing`（栓塞/充满）、`displacement`（浸润/指进）、`unknown`。
+- 固定锚点 `anchor_q1/anchor_q2`，沿 `R = Q1/Q2` 与 `S = Q1+Q2` 各向两侧走有限步（默认 25%，3 步/射线），最后回测锚点检查漂移/滞回；默认 14 个节点、每节点 180 s 观测，计划约 0.8 h（仿真）。
+- 安全域或流量上下限之外的射线截断记入 `ray_status[*].censored_by`，不会为画完整边界而越界或补造数据。
+- 同一条射线上相邻节点若出现目标与束流观测，记录为 `ray_crossings`：仅表示两点之间的**夹逼区间**，不改写成连续边界，也不补二分点；四射线是探索设计，不是最优搜索。
+- 逐节点记录尺寸 `D/h`、CV、去重成滴事件与断裂位置 `Lb/h`、观测范围及演化阶段（`near_anchor` → `size_change` → `breakup_migration` → `unbroken_in_observation_window`，仅作参考差值，不是因果证明）。
+- 输出 `pilot_result.json`、`nodes.csv`、`pilot_plan.csv`（含每条射线计划点与是否执行）、二相图与 `evolution_trace.png`。四射线点数不足以支撑区域插值，因此图只画实测点与夹逼短线，不填充流型区域。
 
-流型分类由 `classify_regime(NodeFeatures)` 依据观测窗口内的连续液流覆盖率、液滴生成频率、液滴直径与变异系数等特征判定，阈值集中在 `RegimeThresholds`，可用真实数据标定。
+该命令仍只运行**离线仿真**；`--max-hours` 会拒绝超出预算的计划，避免默认配置悄悄膨胀。真实执行需先接入带时间同步的测量源，并按泵安全条款验收。
 
-边界类型（`BoundaryBracket.kind`）：
+## 历史学习：目前没有确认的成滴窗口
 
-- `droplet_lower`：滴落 ↔ 射流，**液滴窗口下边界**（油水比 r 的较高侧）；
-- `droplet_upper`：滴落 ↔ 栓塞，**液滴窗口上边界**（油水比 r 的较低侧）；
-- `thread_onset`：射流 ↔ 稳定束流之间（辅助信息）。
+`learn` 只读结构化记录，默认历史根目录可用 `--history-root` 或环境变量 `MCS_QT_DATA_DIR` 指定。缺失/损坏来源会记录警告，不能用内置“整理标签”补成实验事实。
 
-在二相图上，两条边界之间的带状区域就是“能形成液滴”的流量窗口；动画里两条折线随节点逐点出现，最终形成完整的流型分区。
+当前本机历史数据重算结果（源数据会变化，复核时以本次输出为准）：
 
-### 历史数据标定（`learn`）
+| 证据 | 当前数量 | 可以支持什么 |
+| --- | --- | --- |
+| campaign 尺寸候选 | 12 | 仅用于低置信度尺寸趋势拟合；物理尺度未经独立验证 |
+| response library | 45 条流量记录，其中 41 条长度有效 | 核对覆盖与响应长度候选；不与 campaign 直径混为同一标定尺度 |
+| survey | 194 条 unknown/pending；0 reviewed | 记录缺口，不生成流型或成滴标签 |
+| 有效复核成滴/不成滴标签 | 0 / 0 | `window_identified=false`，`calibration_status=prior` |
 
-`mcs_date.experiment.calibration` 会只读扫描 `MCS_QT_Data`（路径可用环境变量 `MCS_QT_DATA_DIR` 覆盖）并产出 `calibration.json`：
+当前 `ratio_low=2.2`、`ratio_high=4.185`、`ratio_thread=6.0` 的置信度均为 `prior`；尺寸模型置信度为 `low`。尺寸拟合不是流型分类器，也不证明存在 dripping 最优区。历史覆盖包含流量比与总流量两个维度，不能因比值相同就忽略总流量混杂。
 
-| 证据 | 用法 |
-| --- | --- |
-| `experiments/experiment_20261016/campaign_analysis/fit_results.json` | 12 段液滴尺寸（末 2 分钟中位长度 → 等效直径），拟合 `D ≈ 92.30 − 0.0221(Q1−60) − 0.3674(Q2−20) µm` |
-| `models/response_library.sqlite3` | 45 条换流量实验（前后流量、基线长度、30 个长度样本、是否接受），用于核对流量覆盖 |
-| `experiments/*/session_summary.json` | 194 条 `regime_survey` 记录——全部 `unknown/pending`，**不作为标签**，只统计证据缺口 |
-| 人工整理的观测 | 70/20、60/20、70/25、50/20、65/22、70/18 记为成滴；90.09/20 记“长结构/无滴”；100/20 记“疑束流” |
+输出审计信息包括 `observation_ledger`（来源路径/记录索引、源 SHA-256、流量比、总流量、复核状态、标签、是否可用于窗口及排除理由）、`source_provenance`（只读来源及 SHA-256）、`coverage`、`interval_constraints` 和 `warnings`。SQLite 以只读 immutable 方式打开，不写源库，也不合并未落盘 WAL；历史图片/视频不在此学习步骤解码。
 
-由此得到默认液滴窗口（可用 `MCS_QT_DATA_DIR` 指向别处后重跑 `learn` 更新）：
+只有明确复核的成滴观测与注明高/低侧的不成滴观测，才能约束相应比值区间；单独 `jetting` 不是不成滴证据，未注明侧的 `no_droplet` 不能自动绑定高侧。约束冲突时保留冲突与先验，不移动参数去迎合数据。更完整的依据与缺口见[参考文档](<docs/references/README.md>)。
 
-| 参数 | 值 | 置信度 | 说明 |
-| --- | --- | --- | --- |
-| `r_high`（→ 射流侧） | 4.185 | medium | 由成滴最大 r=3.889（70/18）与无滴最小 r=4.505（90.09/20）几何夹逼 |
-| `r_low`（→ 栓塞侧） | 2.2 | **prior** | 泵安全约束要求 r≥2，历史最低成滴点 r=2.5（50/20 评价“较理想”），r∈[2,2.5] 尚无实验 |
-| `r_thread` | 6.0 | prior | 射流 → 稳定束流的工程分界 |
+## 结果、来源与动画
 
-`ChipSimulator` 默认使用这组标定值；`ChipModelConfig.from_calibration(result)` 可注入任意重算结果。**局限**：历史 session 没有人工复核的流型标签，`r_high` 只有两点夹逼、`r_low` 是先验；真实使用前建议在 r∈[2,2.5] 和 r∈[3.9,4.5] 各补确认节点，并把 `nodes.csv` 与视频回放引入复核流程。
+运行输出：
 
-### 结果文件
+- `scan_result.json`：`schema_version=2`，配置、节点完整特征、成滴评估、边界区间、来源与执行元数据。保留每节点 `features.source`，仿真记录有 `data_origin=simulation`、模型类型/配置/随机种子及未验证物理边界标记。
+- `calibration.json`：证据账本、来源哈希、覆盖、约束、置信度和警告。
+- `nodes.csv`：节点级摘要；完整演化特征以 JSON 为准。
+- `phase_diagram.gif` 与 `phase_diagram_final.png`：按测量顺序逐步展示；GIF 可抽样节点以限制帧数，当前节点显示尺寸、CV、`Lb/h` 等统计。
+- `evolution_trace.png`：按**节点顺序**展示液滴尺寸 `D/h`、CV 与断裂距离 `Lb/h` 的散点；不同蜘蛛腿不连线，缺测留空，不是自然时间演化或单条单调流量轨迹。束流节点不报告液滴尺寸与 `Lb/h`（未断裂不是 0）。
+- `pilot` 另写 `pilot_result.json`、`nodes.csv`、`pilot_plan.csv`；`pilot_plan.csv` 的计划点与实际观测按 `purpose` 对齐，未执行的点标 `not_run`。
 
-`scan_result.json`（schema_version=1）包含配置、中心节点、全部节点、边界区间与阈值；`calibration.json` 记录标定参数、置信度、证据计数与来源；`nodes.csv` 每个节点一行，便于用 Excel/pandas 复核。`load_result()` 可回读后重新生成动画。
+旧 schema 1 可读，但会警告来源与计时语义不明，将来源降级为 `unspecified_legacy`、边界分辨率降级为不确定；不会把旧文件当作实测证据。
 
-### 动画
+绘图必须保留 **SIMULATION / 非实测** 水印；来源不明显示 **SOURCE UNVERIFIED**，不能自行抹去。安全域外被遮罩，距已测节点过远的区域仍为未知；有限邻域的最近邻填色不是新的测量。边界仅画原始夹逼区间与中点标记，不跨站位连成“已确认连续边界”，也不宣称填满整个相图。
 
-`animate_scan(result, out_dir)` 生成：
+GIF 编码与基础渲染使用 OpenCV/numpy 和内置编码器；Pillow 仅为可选中文字体增强。图像只能解释与其元数据一致的仿真/观测范围。
 
-- `phase_diagram.gif`：每测一个节点画一帧，流型区域按已测节点做最近邻填充，边界逐条出现，最后定格在完整二相图（可循环播放）；
-- `phase_diagram_final.png`：最终静态图。
+## 文献与开发
 
-渲染只依赖 OpenCV（numpy），GIF 由内置纯 Python GIF89a 编码器写出，不需要 matplotlib/Pillow/ffmpeg。若环境里恰好装有 Pillow，会额外用系统中文字体（如 `msyh.ttc`）渲染中文标签；没有 Pillow 时自动回退为英文标签，不影响成图与动画生成。
+[Cubaud & Mason (2008)](https://doi.org/10.1063/1.2911716) 明确讨论 jetting 与 dripping 中的成滴；不能用其术语支持“射流无滴”。本芯片几何、相别角色和物性不与文献自动等价，不直接套用其常数。完整引用与证据分层见[参考文档](<docs/references/README.md>)。
 
-## 与文献的关系（流型判据）
-
-边界模型主要参考两篇工作，并结合本芯片的历史实验做角色重映射：
-
-1. Cubaud & Mason, *Capillary threads and viscous droplets in square microchannels*, Phys. Fluids 20, 053302 (2008)：方形截面十字通道中以两相毛细数 `Ca_i = μ_i J_i / σ`（表观速度 `J_i = Q_i/h²`）划分流型；稳定束流直径近似 `δ/h ≈ √(Q1/(2Q2))`（本芯片角色互换后为 `√(Q2/(2Q1))`，即 `√(1/(2r))`）；`Ca ≈ 0.1` 附近是滴落 ↔ 射流/束流转折。
-2. Kovalchuk et al. 2019（DOI 10.1007/s10404-019-2269-z，MCS_QT 的 `cross_junction_literature_20261014` 报告）：固定分散相流量、改变连续相流量时观察到**重入式 jetting → dripping → jetting**（总油水比 3.33→jetting，4.0/10→dripping，11.1→jetting），支持本仓库“中间窗口成滴、两侧不成滴”的非单调结构。
-
-**注意角色映射**：文献的 L1 是更粘的中心相、L2 是鞘相；本芯片 CH1（油）是两侧鞘相、CH2（水）是中心相，且两篇文献的几何/流量范围都不同。因此 `ChipModelConfig` 中的窗口参数是**本芯片待标定参数**，不直接套用文献常数。
-
-## 安全与真实硬件
-
-- 所有硬件写操作都有超时、回读校验与异常传播；扫描结束（含异常）一定停泵。
-- 真实相机/串口都通过同一套抽象接入，测试与 CI 不需要硬件。
-- 像素标定（`pixel_to_micron`、通道宽度）缺失时，视觉只适合预览；不要用未标定的尺寸做定量结论。
-- 仿真器的流型阈值只是“可跑通”的工程近似，**不能替代真实实验标定**。
-
-## 开发
-
-```bash
+```powershell
 pip install -e ".[dev]"
-pytest            # 52 个测试，全部离线
+pytest
 ruff check .
 ```
 
-测试覆盖：流型分类、液滴窗口边界与标定覆盖、扫描边界夹逼与时间预算、JSON/CSV 往返、GIF 编码往返（自写解码器校验）、视觉合成帧检测、泵仿真与安全约束、CLI 各子命令（含 `learn` 的历史数据读取容错）。
+测试侧重离线分类、证据保守性、扫描预算/未知与夹逼、来源持久化、动画、合成帧和泵安全失败路径。通过离线测试不表示真实硬件已验收。
 
-## 许可证
-
-[MIT](LICENSE)
-
-## 致谢
-
-视觉与泵通信核心代码来自 [MCS_QT](https://github.com/snow78408-del/MCS_QT)（本仓库仅复制裁剪，未修改原工程）。
+许可证：[MIT](<LICENSE>)。

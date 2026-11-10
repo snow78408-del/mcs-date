@@ -1,0 +1,15 @@
+ray,step,q1_ul_min,q2_ul_min,oil_water_ratio,total_flow,observed_regime,evolution_stage,mean_diameter_ratio,breakup_distance_h
+anchor,0,90.0,20.0,4.5,110.0,jetting,near_anchor,1.830846,2.0
+R_down,1,86.086956522,23.913043478,3.6,110.0,jetting,size_change,1.599496432089443,2.0
+R_down,2,81.649484536,28.350515464,2.88,110.0,jetting,breakup_migration,1.3717747989395763,7.235213758316492
+R_down,3,76.707021792,33.292978208,2.304,110.0,threading,unbroken_in_observation_window,0.4590820371027304,
+R_up,1,93.396226415,16.603773585,5.625,110.0,jetting,size_change,2.0645221330825954,2.0
+R_up,2,96.303501946,13.696498054,7.0313,110.0,jetting,breakup_migration,2.299442893935246,7.02316382382184
+R_up,3,98.762968875,11.237031125,8.7891,110.0,threading,unbroken_in_observation_window,0.23555585401154086,
+S_down,1,72.0,16.0,4.5,88.0,jetting,near_anchor,1.8720039999999998,2.0
+S_down,2,57.6,12.8,4.5,70.4,jetting,breakup_migration,1.9049304,5.522748259011182
+S_down,3,46.08,10.24,4.5,56.32,jetting,breakup_migration,1.93127152,17.662576211138862
+S_up,1,112.5,25.0,4.5,137.5,jetting,near_anchor,1.7793984999999999,2.0
+S_up,2,140.625,31.25,4.5,171.875,jetting,breakup_migration,1.715089125,5.522748259011185
+S_up,3,175.78125,39.0625,4.5,214.8438,jetting,breakup_migration,1.63470240625,17.662576211138862
+anchor_revisit,0,90.0,20.0,4.5,110.0,jetting,near_anchor,1.830846,2.0

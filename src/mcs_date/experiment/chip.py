@@ -1,7 +1,8 @@
 """离线芯片仿真：由 (Q1, Q2) 生成可测量的节点特征。
 
-流型模型（用户 2026-11-10 口径 + 历史数据标定）
------------------------------------------------
+默认模式模拟“尺寸变化 → 断裂位置后移 → 观测窗口内不破裂束流”。
+二维射流区、变化幅度与迁移规律都是演示先验，不是历史数据学出的物理规律。
+射流可以在下游切割出液滴，不等于不成滴。以下比值窗口仅保留为可选研究模式：
 油相 CH1 从两侧进入（连续相，总流量 Q1），水相 CH2 从中心进入（分散相，
 流量 Q2）。定义油水流量比::
 
@@ -16,16 +17,17 @@
 * ``r > ratio_thread``：水相被拉成稳定细丝、不破裂 →
   :class:`~.phase.FlowRegime.THREADING`（束流）。
 
-窗口参数默认来自 :mod:`mcs_date.experiment.calibration` 对 MCS_QT 历史
-数据的标定（``ratio_high≈4.19``，由 3.889 成滴与 4.505 长结构夹逼）。
-``ratio_low`` 在真实设备上受泵安全约束 ``Q1 >= 2*Q2`` 限制，实测不可达，
-只能先验取值，置信度标为 ``prior``。
+窗口参数2.2/4.185/6.0全部是仿真先验，不是已复核的芯片边界。
+历史长度候选不能确认滴落，早期长结构不能确认无滴。低比一侧也可能是
+射流而非栓塞，不能从r低就给真实视频命名tubing。允许从reviewed标定注入
+演示参数，但仿真成图不能反过来验证该模型。
 
 尺寸模型沿用 10/16 campaign 的线性拟合::
 
     D[µm] = a + b*(Q1-60) + c*(Q2-20)
 
-它只对液滴窗口内部有意义，用于让离线特征更接近历史观测。
+它来自长度候选的低置信拟合，只能作为尺寸参考，不能用来判定滴落/射流。
+文献角色互换后的水丝直径关系也仅作示意，不证明本芯片适用。
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ MU_L_PER_M3 = 6.0e10  # 1 m³/s = 6e10 µL/min
 class ChipFluids:
     """默认流体对：硅油连续相 + 水分散相（可按实际试剂修改）。"""
 
-    h_m: float = 100e-6          # 方通道边长
+    h_m: float = 50e-6           # 名义方通道边长（仍需实际标定）
     mu_continuous: float = 0.050  # Pa·s，油相
     mu_dispersed: float = 0.0010  # Pa·s，水相
     sigma: float = 0.030          # N/m，界面张力
@@ -55,12 +57,33 @@ class ChipModelConfig:
     """仿真芯片的液滴窗口参数（可由历史标定覆盖）。"""
 
     ratio_low: float = 2.2      # 低于此油水比：切割不足 → 栓塞（先验）
-    ratio_high: float = 4.185   # 高于此油水比：拖拽占优 → 射流（历史夹逼）
+    ratio_high: float = 4.185   # 高于此油水比：射流（仅离线先验）
     ratio_thread: float = 6.0   # 更高：稳定束流（先验）
     size_intercept_um: float = FALLBACK_SIZE[0]
     size_q1_coef_um_per_ulmin: float = FALLBACK_SIZE[1]
     size_q2_coef_um_per_ulmin: float = FALLBACK_SIZE[2]
     cross_section_um: float = 50.0   # 历史芯片名义截面（仅用于直径归一化）
+    operating_mode: str = "jetting"  # 默认射流退化示意；ratio_window仅作可选旧研究模型
+    jetting_center_q1: float = 90.0
+    jetting_center_q2: float = 20.0
+    jetting_log_flow_radius: float = 0.70
+    jetting_log_ratio_radius: float = 0.65
+    migration_start_fraction: float = 0.35
+    anchor_breakup_h: float = 2.0
+    observation_extent_h: float = 20.0
+
+    def __post_init__(self) -> None:
+        if self.operating_mode not in {"jetting", "ratio_window"}:
+            raise ValueError("operating_mode必须为jetting或ratio_window")
+        for name in ("ratio_low", "ratio_high", "ratio_thread", "cross_section_um",
+                     "jetting_center_q1", "jetting_center_q2", "jetting_log_flow_radius",
+                     "jetting_log_ratio_radius", "anchor_breakup_h", "observation_extent_h"):
+            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
+                raise ValueError(f"{name}必须为有限正数")
+        if not self.ratio_low < self.ratio_high < self.ratio_thread:
+            raise ValueError("窗口先验必须有序")
+        if not 0 <= self.migration_start_fraction < 1 or self.anchor_breakup_h >= self.observation_extent_h:
+            raise ValueError("断裂位置示意参数无效")
 
     @classmethod
     def from_calibration(cls, calibration: CalibrationResult) -> "ChipModelConfig":
@@ -115,9 +138,11 @@ class ChipSimulator:
 
     # -- 流型 ---------------------------------------------------------------
     def regime_at(self, q1: float, q2: float) -> FlowRegime:
-        if q1 <= 0 or q2 <= 0:
+        if not math.isfinite(q1) or not math.isfinite(q2) or q1 <= 0 or q2 <= 0:
             return FlowRegime.UNKNOWN
         r = self.oil_water_ratio(q1, q2)
+        if self.config.operating_mode == "jetting":
+            return FlowRegime.JETTING if self.jetting_deviation(q1, q2) < 1.0 else FlowRegime.THREADING
         if r < self.config.ratio_low:
             return FlowRegime.TUBING
         if r <= self.config.ratio_high:
@@ -125,6 +150,23 @@ class ChipSimulator:
         if r <= self.config.ratio_thread:
             return FlowRegime.JETTING
         return FlowRegime.THREADING
+
+    def jetting_deviation(self, q1: float, q2: float) -> float:
+        """二维射流退化示意；半径/中心均为先验，不是由历史标签学出的边界。"""
+        cfg = self.config
+        a = math.log(q1 / cfg.jetting_center_q1) / cfg.jetting_log_flow_radius
+        r0 = cfg.jetting_center_q1 / cfg.jetting_center_q2
+        b = math.log((q1 / q2) / r0) / cfg.jetting_log_ratio_radius
+        return math.hypot(a, b)
+
+    def breakup_distance_h(self, q1: float, q2: float) -> float | None:
+        cfg = self.config
+        if cfg.operating_mode != "jetting" or self.regime_at(q1, q2) is not FlowRegime.JETTING:
+            return None
+        rho = self.jetting_deviation(q1, q2)
+        # 先改变尺寸；偏离一定幅度后切割位置再明显向下游迁移。
+        progress = max(0.0, (rho - cfg.migration_start_fraction) / (1 - cfg.migration_start_fraction))
+        return cfg.anchor_breakup_h + (cfg.observation_extent_h - cfg.anchor_breakup_h) * progress ** 2
 
     def droplet_diameter_um(self, q1: float, q2: float) -> float:
         raw = (
@@ -172,6 +214,15 @@ class ChipSimulator:
         else:  # UNKNOWN：无有效测量
             coverage = diameter = rate = cv = plug = 0.0
 
+        if self.config.operating_mode == "jetting":
+            if regime is FlowRegime.JETTING:
+                cfg = self.config
+                ratio_delta = math.log((q1 / q2) / (cfg.jetting_center_q1 / cfg.jetting_center_q2))
+                diameter = self.droplet_diameter_um(q1, q2) / cfg.cross_section_um * max(0.3, 1 + 0.5 * ratio_delta)
+                cv = 0.08 + 0.18 * self.jetting_deviation(q1, q2) ** 2
+            elif regime is FlowRegime.THREADING:
+                rate = 0.0
+
         return NodeFeatures(
             q1=q1,
             q2=q2,
@@ -182,6 +233,11 @@ class ChipSimulator:
             max_plug_length_ratio=max(0.0, min(1.0, plug)),
             sample_count=int(window_s * 5),
             window_s=window_s,
+            source="simulation",
+            droplet_events=int(rate * window_s) if regime in {FlowRegime.DRIPPING, FlowRegime.JETTING} else 0,
+            junction_visible=self.config.operating_mode == "jetting",
+            breakup_distance_h=self.breakup_distance_h(q1, q2) if self.config.operating_mode == "jetting" else None,
+            observation_extent_h=self.config.observation_extent_h if self.config.operating_mode == "jetting" else None,
         )
 
     def observe(self, q1: float, q2: float, *, window_s: float = 180.0) -> tuple[NodeFeatures, FlowRegime, float]:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -190,14 +191,22 @@ def demo_experiment(
     out_dir.mkdir(parents=True, exist_ok=True)
     config = scan_config or ScanConfig()
     calibration = calibration or learn_calibration()
-    simulator = ChipSimulator(config=ChipModelConfig.from_calibration(calibration))
+    model_config = replace(ChipModelConfig.from_calibration(calibration),
+                           operating_mode="jetting" if config.target_regime == "jetting" else "ratio_window",
+                           jetting_center_q1=config.center_q1, jetting_center_q2=config.center_q2)
+    simulator = ChipSimulator(config=model_config)
     result = run_offline_scan(config, simulator=simulator, logger=logger)
+    result.metadata["calibration"] = calibration.as_dict()
     json_path = save_result(result, out_dir / "scan_result.json")
     csv_path = save_nodes_csv(result, out_dir / "nodes.csv")
     calibration_path = calibration.save(out_dir / "calibration.json")
     artifacts = animate_scan(result, out_dir)
     counts = {regime.value: count for regime, count in summarize_regimes(result).items()}
     summary = {
+        "data_origin": "simulation",
+        "physical_boundaries_verified": False,
+        "target_regime": config.target_regime,
+        "evolution_trace": str(artifacts.evolution_path),
         "nodes": len(result.nodes),
         "brackets": len(result.brackets),
         "planned_hours": round(result.total_duration_s / 3600.0, 2),
@@ -216,9 +225,8 @@ def demo_experiment(
         f"计划 {summary['planned_hours']} h，动画 {summary['gif']}"
     )
     logger(
-        f"[SCAN] 液滴窗口 r=Q1/Q2 ∈ [{calibration.ratio_low:g}, "
-        f"{calibration.ratio_high:g}]（r_high 置信度 {calibration.ratio_high_confidence}），"
-        f"流型计数 {counts}"
+        f"[SCAN] SIMULATION：目标 {config.target_regime}，记录尺寸→断裂位置→束流；"
+        f"流型计数 {counts}。模型边界未经实测验证，历史尺寸拟合不等于流型标签。"
     )
     return summary
 

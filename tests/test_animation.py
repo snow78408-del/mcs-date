@@ -89,6 +89,7 @@ def test_animate_scan_writes_valid_gif_and_png(tmp_path) -> None:
     artifacts = animate_scan(result, tmp_path, config=diagram)
     assert artifacts.gif_path.exists()
     assert artifacts.png_path.exists()
+    assert artifacts.evolution_path is not None and artifacts.evolution_path.exists()
     assert artifacts.frame_count > 0
 
     width, height, decoded = read_gif(artifacts.gif_path)

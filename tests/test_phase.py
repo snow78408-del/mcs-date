@@ -18,6 +18,7 @@ def make_features(**overrides: float) -> NodeFeatures:
         "max_plug_length_ratio": 0.2,
         "sample_count": 30,
         "window_s": 180.0,
+        "source": "heuristic",
     }
     base.update(overrides)
     return NodeFeatures(**base)  # type: ignore[arg-type]

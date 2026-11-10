@@ -1,46 +1,82 @@
-# 参考文献与实测依据
+# 参考文献、历史证据与先验边界
 
-## Cubaud & Mason (2008)
+本文区分**文献术语、用户当前实验意图、历史结构化证据、仿真先验**。它们不能互相替代；当前没有经复核的真实成滴窗口，也没有真实端到端闭环实验已经就绪的结论。使用方法见[主 README](<../../README.md>)。
 
-> T. Cubaud and T. G. Mason, "Capillary threads and viscous droplets in square
-> microchannels", *Physics of Fluids* **20**, 053302 (2008).
-> DOI: [10.1063/1.2911716](https://doi.org/10.1063/1.2911716)
+## 1. 物理口径：射流也能成滴
 
-本仓库的流型判据（滴落 / 射流 / 稳定束流 / 栓塞 / 浸润）与边界建模参考了这篇论文：
+### Cubaud & Mason (2008)
 
-- 方形截面十字通道，四个臂宽均为 `h`；中心相 L1 以 `Q1` 注入，两侧鞘相 L2 各以 `Q2/2` 注入；
-- 两相毛细数 `Ca_i = μ_i J_i / σ`，表观速度 `J_i = Q_i / h²`；
-- 稳定束流直径 `δ/h ≈ (Q1/(2Q2))^{1/2}`；
-- `Ca1 ≈ 10^-1` 附近为滴落与射流/束流的转折，高鞘相流量趋向稳定束流，过高进入栓塞；
-- 低界面张力体系在低 `Ca1` 下出现浸润/指进。
+> T. Cubaud and T. G. Mason, “Capillary threads and viscous droplets in square microchannels”, *Physics of Fluids* **20**, 053302 (2008).
+>
+> DOI：[10.1063/1.2911716](https://doi.org/10.1063/1.2911716)
 
-论文 PDF 由用户提供，仅用于本地阅读与参数建模，**未提交到本仓库**（见 `.gitignore`
-中的 `docs/references/*.txt`）。本目录只保留引用信息与结论摘要，不转载原文。
+论文摘要明确区分 threading、jetting、dripping、tubing、displacement，并说明在 **jetting 和 dripping 两种模式下都测量液滴尺寸**；同时研究射流成滴前的临界液丝长度。因而 `jetting` 本身绝不是 `no_droplet` 标签。
 
-## Kovalchuk et al. (2019)
+本仓库采用的概念区别是：dripping 在交汇点附近断裂；jetting 延伸到下游后断裂成滴；threading 是给定且充分的观察范围内未见断裂。对有限视野作出的“未见断裂”不能外推为任意下游永久不成滴。仅有尺寸/CV 而没有空间拓扑证据，也不足以区分 dripping 与 jetting。
+
+论文讨论以毛细数等表征流态。其几何、黏度比、界面张力和流量定义不能不经验证直接迁移为本芯片阈值。本芯片 CH1 为两侧连续相（油）的总流量 Q1，CH2 为中心分散相（水）Q2；必须先核对相别与总/单侧流量定义，不能只交换符号就宣称边界已标定。
+
+用户提供的原文材料仅供本地阅读，不随仓库分发；排除规则见[忽略配置](<../../.gitignore>)。这里保留引用与有边界的概念摘要，不转载原文。
+
+### Kovalchuk et al. (2019)：辅助线索，非本芯片标签
 
 > N. M. Kovalchuk et al., *Microfluidics and Nanofluidics* (2019).
-> DOI: [10.1007/s10404-019-2269-z](https://doi.org/10.1007/s10404-019-2269-z)
+>
+> DOI：[10.1007/s10404-019-2269-z](https://doi.org/10.1007/s10404-019-2269-z)
 
-来自 MCS_QT 的 `experiments/cross_junction_literature_20261014` 报告：固定分散相流量、
-改变连续相流量时观察到**重入式 jetting → dripping → jetting**（总油/水比 3.33 为
-jetting，4.0 与 10 为 dripping，11.1 又回到 jetting）。这支持本芯片“只有中间油水比
-窗口能形成液滴、两侧分别进入射流/束流”的非单调结构。
+旧说明曾转述 MCS_QT 文献报告中的“jetting → dripping → jetting”及若干流量比。此类二手转述不作为本芯片复核观测，本次不将其中数值写入成滴标签、边界拟合或确认阈值；仍需回到原文、具体物性/几何及本芯片原始视频核验。即使出现重入流型，也不能推出“射流不成滴”或“只有中间 dripping 区才能产滴”。
 
-## 本芯片的角色映射
+## 2. 当前实验意图与默认仿真
 
-文献中 L1 是较粘的中心相、L2 是鞘相；本芯片的 CH1（油）是两侧鞘相、CH2（水）是
-中心相。因此 `ChipModelConfig` 中的边界参数是按本芯片几何与流体角色重写的待标定参数，
-不能直接套用文献中的常数。
+日常目标是：操作员选当前认为最好的 **jetting 成滴点**，从附近扩展，观察**尺寸变化 → 下游断裂/形成位置迁移 → 观察窗口内连续液丝不再断裂**。这里的最佳点未经程序寻优或独立验证；默认 90/20 µL/min 只是演示锚点。
 
-## 历史数据（只读，不随仓库分发）
+[仿真器](<../../src/mcs_date/experiment/chip.py>) 默认在 `log(Q1)` / `log(Q1/Q2)` 空间用椭圆偏离量 `rho` 划分射流成滴与窗口内未断裂区，并人为安排先尺寸变化、后断裂位置迁移。**椭圆形状、中心、半径、先后阶段及阈值都是说明性 PRIOR，不是学出的物理规律**。尺寸趋势可以借用低置信度历史候选拟合，但这不把流型或断裂位置变成实测。
 
-`mcs_date.experiment.calibration` 读取本机 `MCS_QT_Data` 下的结构化记录（路径可用
-`MCS_QT_DATA_DIR` 覆盖）：
+`--target-regime dripping` 仅切换可选 `ratio_window` 研究示意模式。该模式的 `2.2 / 4.185 / 6.0` 当前全部为 `prior`，不能引用为已确认的成滴范围或真实最优 dripping 点。默认扫描目标是 jetting，不再用 junction dripping 代替用户日常工作状态。
 
-- `experiments/experiment_20261016/campaign_analysis/fit_results.json`：12 段液滴尺寸；
-- `models/response_library.sqlite3`：45 条换流量实验；
-- `experiments/*/session_summary.json`：194 条 `regime_survey` 记录（全部未知/待复核，只统计缺口）。
+## 3. 历史数据：只读、可审计、未复核不升级
 
-这些原始数据体积很大且包含实验图像，**不进入本仓库**；仓库只保存由它们重算出的标定参数
-（`calibration.json` 由 `python -m mcs_date learn` 生成）。
+[标定模块](<../../src/mcs_date/experiment/calibration.py>) 读取本机外部历史根目录；可通过 `--history-root` 或 `MCS_QT_DATA_DIR` 指定。历史原始记录与视频不随仓库分发。以下路径是**历史根目录下的来源布局**，不是仓库中可下载的数据文件：
+
+```text
+experiments/experiment_20261016/campaign_analysis/fit_results.json
+models/response_library.sqlite3
+experiments/**/session_summary.json
+```
+
+当前本机重算摘要：
+
+| 来源/结论 | 数量与状态 | 限制 |
+| --- | --- | --- |
+| campaign 尺寸候选 | 12 | 低置信度拟合，物理尺度未经独立确认 |
+| response library | 45 条记录、45 个有效流量点、41 条有效长度候选 | 4 条缺失/无效长度仍保留流量覆盖；长度候选不混作同单位直径 |
+| `regime_survey` | 194 条 unknown/pending；0 reviewed | 只记录证据缺口，不作为流型标签 |
+| 有效已复核成滴/不成滴标签 | 0 / 0 | 不存在确认的成滴边界夹逼 |
+| 标定结果 | `window_identified=false`、`calibration_status=prior` | 三个比值参数置信度均为 prior；尺寸模型为 low |
+
+当前记录的比值覆盖约 `[2.0, 5.7701]`，总流量覆盖约 `[59.7023, 120.0] µL/min`；覆盖不等于该区域有已复核流型，更不表示所有中间点都测过。同一流量比下不同总流量可能不等价，不能用比值区间掩盖混杂。数字随源数据变化，以本次 `learn` 输出为准。
+
+### 审计账本与约束
+
+生成的标定 JSON 包含：
+
+- `observation_ledger`：来源路径与记录索引、源 `source_sha256`、Q1/Q2/比值/总流量、证据类型、复核状态、成滴标签、是否可用于窗口以及排除理由；人工输入另有 `input_sha256`。
+- `source_provenance`：源路径、只读访问标识与 SHA-256；便于知道哪一版源文件产生了结论。
+- `coverage`：有效流量与尺寸候选分别计数，并列比值/总流量范围；不能只报告成功筛选后的样本。
+- `interval_constraints`：保留正观测与明确高/低侧负观测约束；区间几何中点只作摘要，不是精确相变常数。
+- `warnings`：来源缺失/损坏、无效长度、无复核标签或约束冲突，不静默编造替代数据。
+
+SQLite 采用只读 immutable 连接，不修改源库、不合并未落盘 WAL。此学习过程不解码历史视频/图片。源文件哈希和路径应从本次输出核对，不在文档中固定一份可能过期的账本。
+
+只有明确复核的成滴标签可支持成滴正证据；尺寸候选、CV、`jetting` 名称或 `pending` 记录都不能自动晋升。高/低侧负证据需明确标为相应侧；普通 `no_droplet` 无侧信息时不能自动绑定高侧。冲突约束会保留并阻止数值窗口更新，不移动先验去适配矛盾。当前没有任何内置虚构的“人工整理成滴点”。
+
+## 4. 结果的保守解释与真实实验缺口
+
+- [分类模块](<../../src/mcs_date/experiment/phase.py>) 将流型与成滴/均匀性评估分开。真实分类需已标定交汇点、断裂距离、充分观察长度和去重事件；缺少这些信息保留 `unknown`，不能只靠尺寸模型确定流型。
+- [扫描策略](<../../src/mcs_date/experiment/strategy.py>) 受节点、时间、安全流量域约束；未知不是外部边界。夹逼结果是原始节点区间，安全域截断/预算终止并不等于找到了真实边界。
+- [结果格式](<../../src/mcs_date/experiment/report.py>) 为 schema 2，保留来源、完整特征与元数据；schema 1 加载会警告并把来源降级为 `unspecified_legacy`、边界分辨率设为不确定。计划时间包含所有节点启动等待，实际墙钟另记，不能互相替换。
+- [绘图](<../../src/mcs_date/experiment/animate.py>) 对仿真强制 `SIMULATION / 非实测` 水印，对不明来源显示 `SOURCE UNVERIFIED`；安全域遮罩与未知区保留。原始夹逼区间不能连成无证据的连续确定边界，节点顺序的尺寸/CV/`Lb/h` 演化也不是完整物理响应曲线。
+- 独立视频/相机入口只是 OpenCV 读帧，目前没有校准交汇点、断裂位置、唯一事件的真实闭环 `MeasurementSource`；工业 SDK 未移植。`scan` / `demo` 只能仿真。
+- [泵服务](<../../src/mcs_date/pump/service.py>) 校验的参数回读不等于物理流量；不能确认停机时会报错，但软件无法保证故障设备物理停止。本轮没有硬件测试，不以离线测试替代安全验收。
+
+下一步需要针对具体芯片/流体建立可追溯像素和空间标定、确认足够观察范围与唯一断裂事件、人工复核原始视频，并在独立硬件安全验收后实现真实测量适配器；在这些证据到位前不宣称真实自动实验已经准备完成。
