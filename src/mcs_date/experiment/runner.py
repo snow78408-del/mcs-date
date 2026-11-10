@@ -84,7 +84,7 @@ class ExperimentRunner:
             config=self.scan_config,
             progress=lambda node: self.logger(
                 f"[NODE {node.index:03d}] Q1={node.q1:7.2f} Q2={node.q2:7.2f} "
-                f"λ={node.flow_ratio:5.3f} -> {node.regime.value:10s} "
+                f"r={node.flow_ratio:5.3f} -> {node.regime.value:10s} "
                 f"(conf {node.confidence:.2f}, {node.purpose})"
             ),
         )

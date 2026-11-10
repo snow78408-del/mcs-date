@@ -18,9 +18,16 @@ import cv2
 import numpy as np
 
 from .experiment.animate import animate_scan
+from .experiment.calibration import (
+    CalibrationResult,
+    learn_calibration,
+    summarize_calibration,
+)
+from .experiment.chip import ChipModelConfig, ChipSimulator
 from .experiment.models import ScanConfig
 from .experiment.report import save_nodes_csv, save_result
 from .experiment.runner import run_offline_scan
+from .experiment.strategy import summarize_regimes
 from .pump import PumpController, PumpSafetyError, SimulatedPumpBackend
 from .vision import VisionPipeline, default_config
 
@@ -175,23 +182,31 @@ def demo_experiment(
     out_dir: str | Path = "out",
     *,
     scan_config: ScanConfig | None = None,
+    calibration: CalibrationResult | None = None,
     logger: Logger = print,
 ) -> dict[str, Any]:
     """离线跑一次二相图扫描，保存数据并生成动画。"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     config = scan_config or ScanConfig()
-    result = run_offline_scan(config, logger=logger)
+    calibration = calibration or learn_calibration()
+    simulator = ChipSimulator(config=ChipModelConfig.from_calibration(calibration))
+    result = run_offline_scan(config, simulator=simulator, logger=logger)
     json_path = save_result(result, out_dir / "scan_result.json")
     csv_path = save_nodes_csv(result, out_dir / "nodes.csv")
+    calibration_path = calibration.save(out_dir / "calibration.json")
     artifacts = animate_scan(result, out_dir)
+    counts = {regime.value: count for regime, count in summarize_regimes(result).items()}
     summary = {
         "nodes": len(result.nodes),
         "brackets": len(result.brackets),
         "planned_hours": round(result.total_duration_s / 3600.0, 2),
         "stopped_reason": result.stopped_reason,
+        "regime_counts": counts,
+        "calibration": summarize_calibration(calibration),
         "json": str(json_path),
         "csv": str(csv_path),
+        "calibration_json": str(calibration_path),
         "gif": str(artifacts.gif_path),
         "png": str(artifacts.png_path),
         "frames": artifacts.frame_count,
@@ -199,6 +214,11 @@ def demo_experiment(
     logger(
         f"[SCAN] {summary['nodes']} 节点 / {summary['brackets']} 边界，"
         f"计划 {summary['planned_hours']} h，动画 {summary['gif']}"
+    )
+    logger(
+        f"[SCAN] 液滴窗口 r=Q1/Q2 ∈ [{calibration.ratio_low:g}, "
+        f"{calibration.ratio_high:g}]（r_high 置信度 {calibration.ratio_high_confidence}），"
+        f"流型计数 {counts}"
     )
     return summary
 

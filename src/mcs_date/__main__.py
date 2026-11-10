@@ -23,9 +23,14 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--out", default="out", help="输出目录（默认 out）")
     demo.add_argument("--quiet", action="store_true", help="只输出汇总")
 
+    learn = subparsers.add_parser("learn", help="从 MCS_QT 历史数据学习液滴窗口/尺寸模型")
+    learn.add_argument("--out", default="out", help="输出目录（默认 out）")
+    learn.add_argument("--history-root", default=None, help="MCS_QT_Data 目录（缺省读环境变量）")
+    learn.add_argument("--quiet", action="store_true", help="只输出 JSON")
+
     scan = subparsers.add_parser("scan", help="跑一次蜘蛛式扫描（离线仿真）")
     scan.add_argument("--out", default="out", help="输出目录（默认 out）")
-    scan.add_argument("--center-q1", type=float, default=80.0, help="中心工作点 Q1 (µL/min)")
+    scan.add_argument("--center-q1", type=float, default=70.0, help="中心工作点 Q1 (µL/min)")
     scan.add_argument("--center-q2", type=float, default=20.0, help="中心工作点 Q2 (µL/min)")
     scan.add_argument("--node-seconds", type=float, default=180.0, help="每节点观测秒数")
     scan.add_argument("--no-animate", action="store_true", help="只保存数据，不生成动画")
@@ -60,8 +65,23 @@ def _cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_learn(args: argparse.Namespace) -> int:
+    from .experiment.calibration import learn_calibration, summarize_calibration
+
+    calibration = learn_calibration(args.history_root)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = calibration.save(out_dir / "calibration.json")
+    payload = summarize_calibration(calibration)
+    payload["path"] = str(path)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     from .experiment.animate import animate_scan
+    from .experiment.calibration import learn_calibration
+    from .experiment.chip import ChipModelConfig, ChipSimulator
     from .experiment.models import ScanConfig
     from .experiment.report import save_nodes_csv, save_result
     from .experiment.runner import run_offline_scan
@@ -73,16 +93,21 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         node_duration_s=args.node_seconds,
     )
     config.validate()
-    result = run_offline_scan(config, logger=logger)
+    calibration = learn_calibration()
+    simulator = ChipSimulator(config=ChipModelConfig.from_calibration(calibration))
+    result = run_offline_scan(config, simulator=simulator, logger=logger)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = save_result(result, out_dir / "scan_result.json")
     csv_path = save_nodes_csv(result, out_dir / "nodes.csv")
+    calibration_path = calibration.save(out_dir / "calibration.json")
     payload: dict[str, object] = {
         "nodes": len(result.nodes),
         "brackets": len(result.brackets),
+        "droplet_window": [calibration.ratio_low, calibration.ratio_high],
         "json": str(json_path),
         "csv": str(csv_path),
+        "calibration": str(calibration_path),
     }
     if not args.no_animate:
         artifacts = animate_scan(result, out_dir)
@@ -225,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     handlers = {
         "demo": _cmd_demo,
+        "learn": _cmd_learn,
         "scan": _cmd_scan,
         "animate": _cmd_animate,
         "vision": _cmd_vision,

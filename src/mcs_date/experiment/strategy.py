@@ -106,8 +106,10 @@ class SpiderScanner:
         q2 = base.q2
         current = base
         for _ in range(cfg.max_expand_steps):
-            # 单调性启发：继续沿该方向只会停留在同一极端流型，提前收手省节点。
-            if direction == "low" and current.regime in (FlowRegime.DRIPPING, FlowRegime.DISPLACEMENT):
+            # 单调性启发：沿 Q2 方向只会更深入某一侧极端流型，提前收手省节点。
+            #   Q2 升高 → r=Q1/Q2 降低 → 栓塞（TUBING）
+            #   Q2 降低 → r 升高      → 束流（THREADING）
+            if direction == "low" and current.regime is FlowRegime.THREADING:
                 break
             if direction == "high" and current.regime is FlowRegime.TUBING:
                 break
@@ -131,8 +133,8 @@ class SpiderScanner:
         direction: str,
         kind: str,
     ) -> None:
-        """对边界做几何二分；仅对束流/淹没边界值得多花节点。"""
-        if kind not in {"stream_onset", "flood_onset"}:
+        """对液滴窗口边界做几何二分；束流边界只记录粗区间。"""
+        if kind not in {"droplet_upper", "droplet_lower"}:
             self._record_bracket(station_q1, direction, kind, inside, outside)
             return
 
@@ -226,10 +228,10 @@ def summarize_regimes(result: ScanResult) -> dict[FlowRegime, int]:
 
 
 def station_boundaries(result: ScanResult) -> dict[float, dict[str, BoundaryBracket]]:
-    """按站位汇总 ``stream_onset`` / ``flood_onset`` 边界。"""
+    """按站位汇总 ``droplet_upper`` / ``droplet_lower`` 边界。"""
     table: dict[float, dict[str, BoundaryBracket]] = {}
     for bracket in result.brackets:
-        if bracket.kind not in {"stream_onset", "flood_onset"}:
+        if bracket.kind not in {"droplet_upper", "droplet_lower"}:
             continue
         entry = table.setdefault(bracket.station_q1, {})
         current = entry.get(bracket.kind)

@@ -28,7 +28,9 @@ class NodeRecord:
 
     @property
     def flow_ratio(self) -> float:
-        return self.q2 / self.q1 if self.q1 > 0 else float("inf")
+        """油水流量比 ``r = Q1/Q2``（用户口径的“流速比”）。"""
+
+        return self.q1 / self.q2 if self.q2 > 0 else float("inf")
 
 
 @dataclass(frozen=True)
@@ -36,9 +38,9 @@ class BoundaryBracket:
     """一个被夹逼出来的流型边界区间。"""
 
     station_q1: float
-    kind: str                 # stream_onset / thread_onset / flood_onset
+    kind: str                 # droplet_upper / droplet_lower / thread_onset
     direction: str            # low / high（相对该站基准点）
-    inside: NodeRecord        # 基准流型一侧（束流区内或外）
+    inside: NodeRecord        # 液滴区一侧（窗口内）
     outside: NodeRecord       # 另一流型一侧
     boundary_q2: float
     relative_width: float
@@ -46,14 +48,16 @@ class BoundaryBracket:
 
     @property
     def boundary_ratio(self) -> float:
-        return self.boundary_q2 / self.station_q1 if self.station_q1 > 0 else float("inf")
+        """边界处的油水比 ``Q1/Q2``。"""
+
+        return self.station_q1 / self.boundary_q2 if self.boundary_q2 > 0 else float("inf")
 
 
 @dataclass(frozen=True)
 class ScanConfig:
     """蜘蛛式扫描配置。"""
 
-    center_q1: float = 80.0
+    center_q1: float = 70.0
     center_q2: float = 20.0
     node_duration_s: float = 180.0     # 每个节点观测约 3 分钟
     startup_s: float = 30.0            # 换流量后的稳定等待（不计入观测窗口）
@@ -109,15 +113,23 @@ class ScanResult:
 
 
 def classify_boundary_kind(a: FlowRegime, b: FlowRegime) -> str:
-    """把两侧流型映射成边界类型。"""
+    """把两侧流型映射成液滴窗口边界类型。
+
+    * ``droplet_upper``：栓塞 ↔ 滴落（Q2 较高一侧，r = ratio_low）；
+    * ``droplet_lower``：滴落 ↔ 射流（Q2 较低一侧，r = ratio_high）；
+    * ``thread_onset``：射流 ↔ 束流。
+    """
+
     g1, g2 = regime_group(a), regime_group(b)
     groups = {g1, g2}
+    if groups == {"droplet", "plug"}:
+        return "droplet_upper"
     if groups == {"droplet", "stream"}:
-        return "stream_onset"
-    if groups == {"stream", "flood"}:
-        return "flood_onset"
-    if groups == {"droplet", "flood"}:
-        return "flood_onset"
+        if (a is FlowRegime.DRIPPING and b is FlowRegime.JETTING) or (
+            a is FlowRegime.JETTING and b is FlowRegime.DRIPPING
+        ):
+            return "droplet_lower"
+        return "thread_onset"
     if a is FlowRegime.JETTING and b is FlowRegime.THREADING:
         return "thread_onset"
     if a is FlowRegime.THREADING and b is FlowRegime.JETTING:
@@ -126,10 +138,12 @@ def classify_boundary_kind(a: FlowRegime, b: FlowRegime) -> str:
 
 
 def regime_group(regime: FlowRegime) -> str:
-    if regime in (FlowRegime.DRIPPING, FlowRegime.DISPLACEMENT):
+    if regime is FlowRegime.DRIPPING:
         return "droplet"
     if regime in (FlowRegime.JETTING, FlowRegime.THREADING):
         return "stream"
     if regime is FlowRegime.TUBING:
-        return "flood"
+        return "plug"
+    if regime is FlowRegime.DISPLACEMENT:
+        return "displacement"
     return "unknown"

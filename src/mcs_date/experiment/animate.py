@@ -41,8 +41,8 @@ NODE_COLORS_BGR: dict[FlowRegime, tuple[int, int, int]] = {
     FlowRegime.DISPLACEMENT: (80, 60, 190),
     FlowRegime.UNKNOWN: (110, 110, 110),
 }
-LOWER_BOUNDARY_BGR = (190, 110, 40)   # 束流下边界
-UPPER_BOUNDARY_BGR = (40, 90, 190)    # 束流上边界 / 淹没边界
+LOWER_BOUNDARY_BGR = (190, 110, 40)   # 液滴下边界（r=ratio_high，转射流）
+UPPER_BOUNDARY_BGR = (40, 90, 190)    # 液滴上边界（r=ratio_low，转栓塞）
 BG_BGR = (247, 247, 247)
 PANEL_BGR = (255, 255, 255)
 TEXT_BGR = (45, 45, 45)
@@ -270,7 +270,7 @@ class DiagramRenderer:
     def _boundary_points(
         self, visible_bracket_ids: set[int]
     ) -> dict[str, list[tuple[float, float]]]:
-        table: dict[str, dict[float, BoundaryBracket]] = {"stream_onset": {}, "flood_onset": {}}
+        table: dict[str, dict[float, BoundaryBracket]] = {"droplet_lower": {}, "droplet_upper": {}}
         for bracket in self.result.brackets:
             if id(bracket) not in visible_bracket_ids:
                 continue
@@ -322,8 +322,8 @@ class DiagramRenderer:
 
         # 边界折线
         boundaries = self._boundary_points(bracket_ids)
-        self._draw_boundary(canvas, boundaries.get("stream_onset", []), LOWER_BOUNDARY_BGR)
-        self._draw_boundary(canvas, boundaries.get("flood_onset", []), UPPER_BOUNDARY_BGR)
+        self._draw_boundary(canvas, boundaries.get("droplet_lower", []), LOWER_BOUNDARY_BGR)
+        self._draw_boundary(canvas, boundaries.get("droplet_upper", []), UPPER_BOUNDARY_BGR)
 
         # 节点
         for idx, node in enumerate(nodes):
@@ -412,8 +412,8 @@ class DiagramRenderer:
         self._text("边界 / boundaries" if _HAS_PILLOW else "boundaries", x, y, 15, TEXT_BGR, bold=True)
         y += 26
         for color, label in (
-            (LOWER_BOUNDARY_BGR, "束流下边界" if _HAS_PILLOW else "stream onset"),
-            (UPPER_BOUNDARY_BGR, "束流上边界" if _HAS_PILLOW else "flood onset"),
+            (LOWER_BOUNDARY_BGR, "液滴下边界" if _HAS_PILLOW else "droplet lower"),
+            (UPPER_BOUNDARY_BGR, "液滴上边界" if _HAS_PILLOW else "droplet upper"),
         ):
             cv2.line(canvas, (x, y + 9), (x + 24, y + 9), color, 3, cv2.LINE_8)
             self._text(label, x + 32, y, 14, TEXT_BGR)

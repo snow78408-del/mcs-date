@@ -1,4 +1,9 @@
-"""芯片流型模型（仿真器）的物理一致性测试。"""
+"""芯片流型模型（仿真器）的物理一致性测试。
+
+模型口径（用户 2026-11-10）：油水比 ``r = Q1/Q2`` 太低切割不足、太高
+拖拽占优，只有中间窗口能形成液滴。默认参数来自历史标定：
+``r_low=2.2``（先验）、``r_high=4.185``（历史夹逼）、``r_thread=6.0``。
+"""
 
 from __future__ import annotations
 
@@ -6,32 +11,50 @@ import math
 
 import pytest
 
-from mcs_date.experiment import ChipSimulator, FlowRegime
+from mcs_date.experiment import ChipModelConfig, ChipSimulator, FlowRegime
+from mcs_date.experiment.calibration import CalibrationResult, learn_calibration
 
 
 class TestChipSimulator:
     def setup_method(self) -> None:
         self.sim = ChipSimulator()
 
-    def test_center_working_point_is_threading(self) -> None:
-        assert self.sim.regime_at(80.0, 20.0) is FlowRegime.THREADING
+    # -- 液滴窗口 -----------------------------------------------------------
+    def test_working_point_forms_droplets(self) -> None:
+        # 70/20 是历史恒流基准（r=3.5），落在窗口内
+        assert self.sim.regime_at(70.0, 20.0) is FlowRegime.DRIPPING
 
-    def test_low_dispersed_flow_drips(self) -> None:
-        assert self.sim.regime_at(80.0, 1.0) is FlowRegime.DRIPPING
-        assert self.sim.regime_at(80.0, 2.0) is FlowRegime.DRIPPING
+    def test_ideal_droplet_point(self) -> None:
+        # 用户评价“液滴效果较理想”的 50/20（r=2.5）
+        assert self.sim.regime_at(50.0, 20.0) is FlowRegime.DRIPPING
 
-    def test_mid_band_jets(self) -> None:
-        assert self.sim.regime_at(80.0, 7.0) is FlowRegime.JETTING
+    def test_low_ratio_gives_plugs(self) -> None:
+        # r < 2.2：切割不足，宽大栓塞，无液滴
+        assert self.sim.regime_at(40.0, 20.0) is FlowRegime.TUBING
+        assert self.sim.regime_at(20.0, 10.0) is FlowRegime.TUBING
 
-    def test_high_flow_ratio_floods(self) -> None:
-        assert self.sim.regime_at(80.0, 40.0) is FlowRegime.TUBING
+    def test_high_ratio_gives_jetting(self) -> None:
+        # 用户实际常在的射流区：90~100/20（r=4.5~5）
+        assert self.sim.regime_at(90.0, 20.0) is FlowRegime.JETTING
+        assert self.sim.regime_at(100.0, 20.0) is FlowRegime.JETTING
 
-    def test_very_low_oil_flow_displaces(self) -> None:
-        assert self.sim.regime_at(1.0, 0.2) is FlowRegime.DISPLACEMENT
+    def test_very_high_ratio_gives_thread(self) -> None:
+        assert self.sim.regime_at(180.0, 20.0) is FlowRegime.THREADING
+
+    def test_window_edges(self) -> None:
+        cfg = self.sim.config
+        q2 = 20.0
+        assert self.sim.regime_at(cfg.ratio_low * q2 * 0.99, q2) is FlowRegime.TUBING
+        assert self.sim.regime_at(cfg.ratio_low * q2 * 1.01, q2) is FlowRegime.DRIPPING
+        assert self.sim.regime_at(cfg.ratio_high * q2 * 0.99, q2) is FlowRegime.DRIPPING
+        assert self.sim.regime_at(cfg.ratio_high * q2 * 1.01, q2) is FlowRegime.JETTING
+        assert self.sim.regime_at(cfg.ratio_thread * q2 * 1.01, q2) is FlowRegime.THREADING
 
     def test_unknown_for_non_positive_flow(self) -> None:
         assert self.sim.regime_at(0.0, 20.0) is FlowRegime.UNKNOWN
+        assert self.sim.regime_at(20.0, 0.0) is FlowRegime.UNKNOWN
 
+    # -- 无量纲量 -----------------------------------------------------------
     def test_capillary_numbers_are_positive_and_grow_with_flow(self) -> None:
         ca_low, _ = self.sim.capillary_numbers(10.0, 10.0)
         ca_high, _ = self.sim.capillary_numbers(100.0, 10.0)
@@ -45,27 +68,35 @@ class TestChipSimulator:
     def test_thread_diameter_is_clipped(self) -> None:
         assert 0.0 <= self.sim.thread_diameter_ratio(80.0, 1000.0) <= 1.0
 
-    def test_boundaries_rise_overall_with_oil_flow(self) -> None:
-        stations = [10.0, 20.0, 40.0, 80.0, 160.0]
-        lower = []
-        upper = []
-        for q1 in stations:
-            ca, _ = self.sim.capillary_numbers(q1, 10.0)
-            lower.append(self.sim.lambda_low(ca) * q1)
-            upper.append(self.sim.lambda_up(ca) * q1)
-        # λ_low 随 Ca 单调下降（模型基本假设）
-        ca_values = [self.sim.capillary_numbers(q1, 10.0)[0] for q1 in stations]
-        lambdas = [self.sim.lambda_low(ca) for ca in ca_values]
-        assert lambdas == sorted(lambdas, reverse=True)
-        # 高流量段下边界整体抬升，且上下边界永不相交
-        assert lower[-1] > lower[0]
-        assert all(lo < hi for lo, hi in zip(lower, upper))
+    def test_droplet_diameter_follows_history_fit(self) -> None:
+        # 10/16 campaign：D ≈ 92.2 µm @ (70,20)，随 Q1/Q2 缓慢变化
+        d70 = self.sim.droplet_diameter_um(70.0, 20.0)
+        d50 = self.sim.droplet_diameter_um(50.0, 20.0)
+        assert 88.0 < d70 < 96.0
+        assert d50 > d70  # 降低 Q1 略增大液滴（历史拟合负系数）
 
+    # -- 特征与分类一致性 ---------------------------------------------------
     def test_observed_features_are_consistent_with_regime(self) -> None:
-        for q1, q2 in [(80.0, 20.0), (80.0, 7.0), (80.0, 1.0), (80.0, 40.0)]:
-            features = self.sim.features(q1, q2)
-            assert features.q1 == q1
-            assert features.q2 == q2
+        cases = [(70.0, 20.0), (90.0, 20.0), (180.0, 20.0), (40.0, 20.0)]
+        for q1, q2 in cases:
+            expected = self.sim.regime_at(q1, q2)
+            features, regime, confidence = self.sim.observe(q1, q2)
+            assert regime is expected, f"{q1}/{q2}: {regime} != {expected}"
+            assert 0.0 < confidence <= 1.0
             assert features.window_s > 0
-            assert 0.0 <= features.stream_coverage <= 1.0
             assert features.sample_count > 0
+            assert 0.0 <= features.stream_coverage <= 1.0
+
+    def test_calibration_overrides_window(self) -> None:
+        calibration = CalibrationResult(ratio_low=2.6, ratio_high=4.0, ratio_thread=5.0)
+        sim = ChipSimulator(config=ChipModelConfig.from_calibration(calibration))
+        assert sim.regime_at(50.0, 20.0) is FlowRegime.TUBING       # r=2.5 < 2.6
+        assert sim.regime_at(70.0, 20.0) is FlowRegime.DRIPPING     # 2.6 <= 3.5 <= 4.0
+        assert sim.regime_at(90.0, 20.0) is FlowRegime.JETTING      # 4.5 > 4.0
+        assert sim.regime_at(110.0, 20.0) is FlowRegime.THREADING   # 5.5 > 5.0
+
+    def test_learned_calibration_is_reproducible(self) -> None:
+        first = learn_calibration()
+        second = learn_calibration()
+        assert first.ratio_high == second.ratio_high
+        assert first.ratio_low <= first.ratio_high < first.ratio_thread

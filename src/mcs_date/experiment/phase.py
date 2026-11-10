@@ -56,7 +56,9 @@ class NodeFeatures:
 
     @property
     def flow_ratio(self) -> float:
-        return self.q2 / self.q1 if self.q1 > 0 else math.inf
+        """油水流量比 ``r = Q1/Q2``（用户口径的“流速比”）。"""
+
+        return self.q1 / self.q2 if self.q2 > 0 else math.inf
 
 
 @dataclass(frozen=True)

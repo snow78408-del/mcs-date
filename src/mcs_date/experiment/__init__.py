@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from .animate import DiagramConfig, DiagramRenderer, AnimationArtifacts, animate_scan
+from .calibration import (
+    CalibrationResult,
+    DEFAULT_HISTORY_ROOT,
+    learn_calibration,
+    summarize_calibration,
+)
 from .chip import ChipFluids, ChipModelConfig, ChipSimulator
 from .models import (
     BoundaryBracket,
@@ -35,7 +41,9 @@ __all__ = [
     "ChipFluids",
     "ChipModelConfig",
     "ChipSimulator",
+    "CalibrationResult",
     "Clock",
+    "DEFAULT_HISTORY_ROOT",
     "DiagramConfig",
     "DiagramRenderer",
     "ExperimentRunner",
@@ -52,6 +60,7 @@ __all__ = [
     "animate_scan",
     "classify_boundary_kind",
     "classify_regime",
+    "learn_calibration",
     "load_result",
     "merge_features",
     "result_from_dict",
@@ -61,4 +70,5 @@ __all__ = [
     "save_result",
     "station_boundaries",
     "summarize_regimes",
+    "summarize_calibration",
 ]

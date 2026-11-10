@@ -57,3 +57,6 @@ out/
 
 # Extracted paper text is kept local only (copyright)
 docs/references/*.txt
+
+# Local scratch analysis scripts
+.scratch/

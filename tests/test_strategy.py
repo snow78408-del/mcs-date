@@ -16,7 +16,7 @@ from mcs_date.experiment.models import regime_group
 
 
 SMALL_CONFIG = ScanConfig(
-    center_q1=80.0,
+    center_q1=70.0,
     center_q2=20.0,
     node_duration_s=5.0,
     startup_s=1.0,
@@ -36,12 +36,12 @@ def result():
 def test_center_node_starts_at_working_point(result) -> None:
     assert result.center_node.q1 == SMALL_CONFIG.center_q1
     assert result.center_node.q2 == SMALL_CONFIG.center_q2
-    assert result.center_node.regime is FlowRegime.THREADING
+    assert result.center_node.regime is FlowRegime.DRIPPING
 
 
 def test_scan_produces_nodes_and_brackets(result) -> None:
     assert len(result.nodes) >= 6
-    assert result.brackets, "扫描至少应夹逼出一个流型边界"
+    assert result.brackets, "扫描至少应夹逼出一个液滴窗口边界"
     assert len(result.nodes) <= SMALL_CONFIG.max_nodes
 
 
@@ -64,28 +64,71 @@ def test_station_boundaries_stay_inside_brackets(result) -> None:
     for station_q1, entries in table.items():
         assert station_q1 > 0
         for kind, bracket in entries.items():
+            assert kind in {"droplet_upper", "droplet_lower"}
             low = min(bracket.inside.q2, bracket.outside.q2)
             high = max(bracket.inside.q2, bracket.outside.q2)
             assert low <= bracket.boundary_q2 <= high
             assert 1.0 <= bracket.relative_width <= SMALL_CONFIG.step_ratio + 1e-9
 
 
-def test_stream_onset_separates_droplet_from_stream(result) -> None:
-    for bracket in result.boundaries("stream_onset"):
-        assert regime_group(bracket.inside.regime) == "stream"
-        assert regime_group(bracket.outside.regime) in {"droplet", "flood"}
+def test_lower_boundary_separates_droplets_from_jets(result) -> None:
+    for bracket in result.boundaries("droplet_lower"):
+        assert bracket.inside.regime is FlowRegime.DRIPPING
+        assert bracket.outside.regime is FlowRegime.JETTING
 
 
-def test_flood_onset_separates_stream_from_flood(result) -> None:
-    for bracket in result.boundaries("flood_onset"):
-        groups = {regime_group(bracket.inside.regime), regime_group(bracket.outside.regime)}
-        assert groups == {"stream", "flood"}
+def test_upper_boundary_separates_droplets_from_plugs(result) -> None:
+    for bracket in result.boundaries("droplet_upper"):
+        assert bracket.inside.regime is FlowRegime.DRIPPING
+        assert bracket.outside.regime is FlowRegime.TUBING
+
+
+def test_boundary_ratios_match_window(result) -> None:
+    """在节点预算更大的一次扫描里，边界油水比应收敛到窗口参数附近。"""
+
+    config = ScanConfig(
+        center_q1=70.0,
+        center_q2=20.0,
+        node_duration_s=2.0,
+        startup_s=0.5,
+        bisection_rounds=2,
+        max_expand_steps=4,
+        max_stations=2,
+        max_nodes=60,
+    )
+    scan = run_offline_scan(config)
+    table = station_boundaries(scan)
+    assert table
+    expected = {
+        "droplet_lower": scan.config and ChipWindow.lower(),
+        "droplet_upper": ChipWindow.upper(),
+    }
+    for entries in table.values():
+        for kind, bracket in entries.items():
+            assert bracket.boundary_ratio == pytest.approx(expected[kind], rel=0.12)
+
+
+class ChipWindow:
+    """与 ``ChipSimulator()`` 默认窗口保持一致的辅助常量。"""
+
+    @staticmethod
+    def lower() -> float:
+        from mcs_date.experiment import ChipSimulator
+
+        return ChipSimulator().config.ratio_high
+
+    @staticmethod
+    def upper() -> float:
+        from mcs_date.experiment import ChipSimulator
+
+        return ChipSimulator().config.ratio_low
 
 
 def test_summary_counts_all_regimes(result) -> None:
     counts = summarize_regimes(result)
     assert sum(counts.values()) == len(result.nodes)
     assert all(value > 0 for value in counts.values())
+    assert all(regime is not FlowRegime.UNKNOWN for regime in counts)
 
 
 def test_scanner_rejects_bad_center() -> None:
