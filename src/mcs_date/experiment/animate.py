@@ -47,6 +47,9 @@ BG_BGR = (247, 247, 247)
 PANEL_BGR = (255, 255, 255)
 TEXT_BGR = (45, 45, 45)
 GRID_BGR = (214, 214, 214)
+# 已测节点多远之外的区域不参与填充（log10 单位）；让动画开头保留“未测”底色，
+# 而不是把整个象限涂成第一个节点的流型。
+MAX_FILL_DIST_LOG10 = 0.55
 AXIS_BGR = (90, 90, 90)
 HIGHLIGHT_BGR = (20, 20, 20)
 
@@ -263,7 +266,13 @@ class DiagramRenderer:
         color_lut = np.array(
             [REGIME_COLORS_BGR[node.regime] for node in nodes], dtype=np.uint8
         )
-        flat = color_lut[labels]
+        flat = np.full(
+            (points.shape[0], 3),
+            REGIME_COLORS_BGR[FlowRegime.UNKNOWN],
+            dtype=np.uint8,
+        )
+        near = np.sqrt(best) <= MAX_FILL_DIST_LOG10
+        flat[near] = color_lut[labels[near]]
         return flat.reshape(rows, cols, 3)
 
     # -- 边界 ---------------------------------------------------------------
