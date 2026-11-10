@@ -53,6 +53,14 @@ pip install -e ".[dev]"
 python -m mcs_date demo --out out
 ```
 
+如果暂时不想安装（或没有网络装 setuptools），也可以直接用源码目录运行：
+
+```powershell
+$env:PYTHONPATH = "src"     # Windows PowerShell
+# export PYTHONPATH=src     # Linux/macOS
+python -m mcs_date demo --out out
+```
+
 `demo` 会依次输出：
 
 - `out/demo_vision.png`：合成微通道视频上的液滴检测标注（三帧拼图）；
