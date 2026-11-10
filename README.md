@@ -148,7 +148,7 @@ pump.close()
 - `phase_diagram.gif`：每测一个节点画一帧，流型区域按已测节点做最近邻填充，边界逐条出现，最后定格在完整二相图（可循环播放）；
 - `phase_diagram_final.png`：最终静态图。
 
-渲染只依赖 OpenCV（numpy），GIF 由内置纯 Python GIF89a 编码器写出，不需要 matplotlib/Pillow/ffmpeg。
+渲染只依赖 OpenCV（numpy），GIF 由内置纯 Python GIF89a 编码器写出，不需要 matplotlib/Pillow/ffmpeg。若环境里恰好装有 Pillow，会额外用系统中文字体（如 `msyh.ttc`）渲染中文标签；没有 Pillow 时自动回退为英文标签，不影响成图与动画生成。
 
 ## 与文献的关系（流型判据）
 
